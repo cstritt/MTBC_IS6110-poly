@@ -1,0 +1,57 @@
+gnumbers: ../metadata/10k/gnumbers.txt
+metadata: ../metadata/10k/metadata_reduced.tsv
+path_to_db: /scicore/home/gagneux/GROUP/tbresearch/genomes/IN_PROGRESS/common_mappings/PipelineTB/v2
+vcf: ../data/major_variants.merged.vcf.gz
+
+outdir: 
+  main: results  # No slash at the end
+  benchmarking: results
+  
+detettore:
+  reference: ../data/MTBC0/MTBC0_v1.1.fasta
+  is_target: 'software/detettore6110/resources/is_targets/IS6110.fasta'
+  is_cluster: IS3_168
+  seed_len: 20
+  maxmissing: 4
+
+alignment:
+  maxmissing: 0.5
+
+phylogeny:
+  outgroup: G742339
+  bootstraps: 1000
+
+annotations:
+  mtbc0: ../data/MTBC0/MTBC0v1.1_PGAP_annot.gff
+  mtbc0_regions: ../data/MTBC0/MTBC0.genic_n_intergenic_regions.burden.tsv
+  h37rv: ../data/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
+  mtbc0_h37rv_map: ../data/MTBC0/mtbc0_to_h37rv.genemap.tsv
+  mtbc0_regions: ../data/MTBC0/MTBC0.genic_n_intergenic_regions.burden.tsv
+
+gwas:
+  permutations: 100
+
+motif:
+  min_length:  50      # min length of joint flanking sequences
+  max_length: 150      # max length of joint flanking sequences 
+  max_weights: 1     # max number of weights
+  max_total_seqs: 20000    # subsamble sequences to this number
+  minw:         5       # STREME minimum motif width
+  maxw:         15      # STREME maximum motif width
+  thresh:       0.05    # STREME p-value threshold
+  nmotifs:      20
+  seed:         42
+  streme_extra: ""      # any additional STREME flags
+
+benchmarking:
+  assemblies: config/datasets/31assemblies.tsv
+  min_id: 0.9
+  anchor_length: 300
+  readlengths: [100, 150]
+  coverages: [20, 30, 40, 50]
+  hit_lengths: [20]
+  min_cluster_size: [3]
+
+niche_model_abc:
+  ntips : 500
+  nsimulations : 1000000

@@ -1,0 +1,107 @@
+executor: slurm
+jobs: 20
+jobname: "{rulename}_{jobid}"
+latency-wait: 90
+use-conda: True
+rerun-incomplete: True
+keep-going: True
+#slurm-init-seconds-before-status-checks: 5
+#slurm-no-account: True
+#jobscript: "cluster/slurm_submit.sh"
+
+# SLURM settings
+cluster:
+  submit: sbatch
+  cancel: scancel
+  status: squeue
+
+# Default slurm resources
+default-resources:
+  slurm_partition: scicore
+  qos: "30min"
+  runtime: "30m"
+  cpus_per_task: 1
+  mem_mb: 4000
+  slurm_account: gagneux
+
+# Rule-specific resources
+set-resources:
+
+  isescan:
+    qos: "6hours"
+    runtime: "6h"
+    cpus_per_task: 4
+    mem_mb: 16000
+
+  detettore:
+    mem_mb: 8000  # OOM with 4gb
+
+  detettore_summarize_results:
+    qos: "6hours"
+    runtime: "6h"
+    cpus_per_task: 1
+    mem_mb: 16000
+
+  ancestral_state_reconstruction:
+    qos: "1day"
+    runtime: 1400
+
+  create_alignment:
+    qos: "1day"
+    runtime: 1400
+    mem_mb: 40000
+    cpus_per_task: 20
+  
+  subset_alignment:
+    mem_mb: 8000
+
+  rapidnj:
+    qos: "1week"
+    runtime: "160h"
+    cpus_per_task: 20 
+    mem_mb: 100000
+
+  iqtree:
+    qos: "1week"
+    runtime: "160h"
+    cpus_per_task: 40 
+    mem_mb: 200000
+
+  get_similarity_matrix:
+    mem_mb: 50000
+
+  subset_vcf:
+    qos: "6hours"
+    runtime: "6h"
+    cpus_per_task: 4
+    mem_mb: 16000
+  
+  burden_snpsindels:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 20
+    mem_mb: 100000
+
+  burden_is6110:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 20
+    mem_mb: 100000
+
+  permutations_snpsindels:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 20
+    mem_mb: 20000
+
+  permutations_is6110:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 20
+    mem_mb: 20000
+
+  run_abc:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 1
+    mem_mb: 8000  

@@ -1,0 +1,86 @@
+#!/usr/bin/env python
+
+"""
+Convert file with all reference insertions to vcf
+    
+"""
+
+import sys
+from Bio import SeqIO
+
+try:
+    reference = sys.argv[1]
+    refins = sys.argv[2]
+    strains = sys.argv[3]
+except IndexError:
+    print('Usage: python refins2vcf.py <reference> <refins> <strains>')
+    sys.exit(1)
+    
+
+
+is6110 = """TGAACCGCCCCGGCATGTCCGGAGACTCCAGTTCTTGGAAAGGATGGGGTCATGTCAGGT
+GGTTCATCGAGGAGGTACCCGCCGGAGCTGCGTGAGCGGGCGGTGCGGATGGTCGCAGAG
+ATCCGCGGTCAGCACGATTCGGAGTGGGCAGCGATCAGTGAGGTCGCCCGTCTACTTGGT
+GTTGGCTGCGCGGAGACGGTGCGTAAGTGGGTGCGCCAGGCGCAGGTCGATGCCGGCGCA
+CGGCCCGGGACCACGACCGAAGAATCCGCTGAGCTGAAGCGCTTGCGGCGGGACAACGCC
+GAATTGCGAAGGGCGAACGCGATTTTAAAGACCGCGTCGGCTTTCTTCGCGGCCGAGCTC
+GACCGGCCAGCACGCTAATTACCCGGTTCATCGCCGATCATCAGGGCCACCGCGAGGGCC
+CCGATGGTTTGCGGTGGGGTGTCGAGTCGATCTGCACACAGCTGACCGAGCTGGGTGTGC
+CGATCGCCCCATCGACCTACTACGACCACATCAACCGGGAGCCCAGCCGCCGCGAGCTGC
+GCGATGGCGAACTCAAGGAGCACATCAGCCGCGTCCACGCCGCCAACTACGGTGTTTACG
+GTGCCCGCAAAGTGTGGCTAACCCTGAACCGTGAGGGCATCGAGGTGGCCAGATGCACCG
+TCGAACGGCTGATGACCAAACTCGGCCTGTCCGGGACCACCCGCGGCAAAGCCCGCAGGA
+CCACGATCGCTGATCCGGCCACAGCCCGTCCCGCCGATCTCGTCCAGCGCCGCTTCGGAC
+CACCAGCACCTAACCGGCTGTGGGTAGCAGACCTCACCTATGTGTCGACCTGGGCAGGGT
+TCGCCTACGTGGCCTTTGTCACCGACGCCTACGCTCGCAGGATCCTGGGCTGGCGGGTCG
+CTTCCACGATGGCCACCTCCATGGTCCTCGACGCGATCGAGCAAGCCATCTGGACCCGCC
+AACAAGAAGGCGTACTCGACCTGAAAGACGTTATCCACCATACGGATAGGGGATCTCAGT
+ACACATCGATCCGGTTCAGCGAGCGGCTCGCCGAGGCAGGCATCCAACCGTCGGTCGGAG
+CGGTCGGAAGCTCCTATGACAATGCACTAGCCGAGACGATCAACGGCCTATACAAGACCG
+AGCTGATCAAACCCGGCAAGCCCTGGCGGTCCATCGAGGATGTCGAGTTGGCCACCGCGC
+GCTGGGTCGACTGGTTCAACCATCGCCGCCTCTACCAGTACTGCGGCGACGTCCCGCCGG
+TCGAACTCGAGGCTGCCTACTACGCTCAACGCCAGAGACCAGCCGCCGGCTGAGGTCTCA
+GATCAGAGAGTCTCCGGACTCACCGGGGCGGTTCA"""
+
+
+# Read strains
+with open(strains) as f:
+    strains = [line.strip() for line in f]
+
+# Load reference genome
+ref = SeqIO.read(reference, 'fasta')
+
+# Create dictionary of unique insertion sites
+d_insertions = {}
+with open(refins) as f:
+    next(f)
+    for line in f:
+        line = line.strip().split()
+        strain = line[0]
+        pos = int(line[2])
+        
+        if pos not in d_insertions:
+            d_insertions[pos] = []
+        d_insertions[pos].append(strain)
+
+# Write vcf
+sys.stdout.write('##fileformat=VCFv4.2\n')
+sys.stdout.write('##reference=../data/MTBC0/MTBC0_v1.1.fasta\n')
+sys.stdout.write('##INFO=<ID=GT,Number=1,Type=String,Description="Genotype">\n')
+
+header = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + '\t'.join(strains) + '\n'
+sys.stdout.write(header)
+
+positions = sorted(d_insertions.keys())
+for pos in positions:
+    ref_base = ref.seq[pos].upper()
+    alt_base = is6110[:20]
+    genotypes = []
+    for strain in strains:
+        if strain in d_insertions[pos]:
+            genotypes.append('1')
+        else:
+            genotypes.append('0')
+    
+    sys.stdout.write(f'MTBC0\t{pos}\t.\t{ref_base}\t{alt_base}\t.\t.\t.\tGT\t{"\t".join(genotypes)}\n')
+    

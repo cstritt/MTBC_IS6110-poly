@@ -1,0 +1,270 @@
+---
+title: "Benchmarking detettore6110"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Overview
+
+
+
+
+# Calculate recall and precision
+```{r}
+library(ggplot2)
+library(magrittr)
+library(betareg)
+library(margins)
+library(cowplot)
+
+library(RColorBrewer)
+library(wesanderson)
+library(viridis)
+
+input_table <- snakemake@input[[1]]
+output_html <- snakemake@output[[1]]
+
+input_table <- '../results/benchmarking/detettore/benchmark_summary.tsv'
+
+
+t <- read.table(input_table, sep='\t', header=T)
+
+t$assembly <- as.factor(t$assembly)
+t$coverage <- as.factor(t$coverage)
+t$readlength <- as.factor(t$readlength)
+t$side <- as.factor(t$side)
+
+# Recall/sensitivity and precision, false discovery rate
+t$recall = t$true_positives / (t$true_positives + t$false_negatives)
+t$precision = t$true_positives / (t$true_positives + t$false_positives)
+t$fdr = t$false_positives / (t$true_positives + t$false_positives)
+
+# Number of unpaired inverted repeats
+t$unpaired = t$unpaired_IRL + t$unpaired_IRR
+
+```
+
+
+# Check quality of IS annotation
+Only include assemblies where the IS copy number equals the number of paired IRs. 
+This excludes the 3 assemblies where IS copies are fragmented. I'm not aware of
+biological processes that would lead to the presence of fragmented, active (!) IS 
+in the genome; the other assemblies don't show this pattern; and, finally, the
+three affected assemblies are all from the same source and based on Ion Torrent 
+short reads.
+
+```{r}
+# Copy nr vs. nr of unpaired IRs
+ggplot(t, aes(copy_number, unpaired)) + geom_point() + theme_bw()
+t[which(t$unpaired>0), 1] %>% unique() %>% as.character()
+
+# Copy nr vs. nr of paired IS
+ggplot(t, aes(copy_number, paired_IRs)) + geom_point() + theme_bw()
+exclude <- t[which(t$paired_IRs != t$copy_number), 1] %>% unique() %>% as.character()
+exclude
+
+# Exclude 3 assemblies
+t_filt <- subset(t, !(assembly %in% exclude)) %>% droplevels()
+
+```
+
+
+# Recall/sensitivity
+Plot recall against coverage. 
+Show mean recall for all parameter combinations. Fit GLM to see which parameters affect recall.
+```{r}
+# Line plot
+figS1a <- t_filt %>% 
+  ggplot(aes(y=recall, x=coverage, col=side,group=interaction(assembly,side))) + 
+  geom_point(alpha=0.5) + geom_line(alpha=0.5) + 
+  facet_wrap(~readlength) + 
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Sensitivity') + xlab('Coverage') +
+  scale_color_brewer(palette='Dark2')
+
+figS1a
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/workflow/results/figures/figS1a.sensitivity_lines.svg', figS1a, 
+       width=12, height = 6, units = 'cm')
+
+# Boxplot
+figS1b <- t_filt  %>% 
+  ggplot(aes(y=recall, x=coverage, fill=side)) + 
+  geom_boxplot(alpha=0.5) + 
+  facet_wrap(~readlength) +
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Sensitivity') + xlab('Coverage') +
+  scale_fill_brewer(palette='Dark2')
+
+figS1b
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/workflow/results/figures/figS1b.sensitivity_boxes.svg', figS1b, 
+       width=12, height = 6, units = 'cm')
+
+aggregate(recall~coverage+readlength+side, t_filt, mean)
+
+```
+
+# What affects recall/sensitivity?
+Use beta regression to model a proportion:
+
+- slightly change 0s and 1s to avoid boundary issues
+- weight by copy number to give less weight to low CN strains
+- coefficients from beta regression are log odds. Exponentiate and get marginal effects for interpretation
+
+Results: coverage of 20 can produce quite some false negatives, leading to very low
+sensitivity in low-CN strains. Otherwise there seem to be single elements in single
+assemblies that are occasionally missed, but overall sensitivity is high!
+
+```{R}
+# adjust 0s and 1s
+t_filt$recall_adj <- (t_filt$recall * (nrow(t_filt) - 1) + 0.5) / nrow(t_filt)
+
+m_recall_beta <- betareg(recall_adj ~ assembly + coverage + readlength + side, data = t_filt, weights=t_filt$copy_number)
+
+summary(m_recall_beta)
+
+# Get odds from log odds ration
+exp(coef(m_recall_beta))
+
+# Marginal effects
+m_recall_beta_margins <- margins(m_recall_beta)
+summary(m_recall_beta_margins)
+
+```
+
+# Precision
+Same for precision. 
+```{r}
+
+# Line plot
+figS1c <- t_filt %>% 
+  ggplot(aes(y=precision, x=coverage, col=side,group=interaction(assembly,side))) + 
+  geom_point(alpha=0.5) + geom_line(alpha=0.5) + 
+  facet_wrap(~readlength) + 
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Precision') + xlab('Coverage') +
+  scale_color_brewer(palette='Dark2')
+
+figS1c
+
+ggsave(
+  '/home/cristobal/TB/projects/MTBC_IS6110-poly/workflow/results/figures/figS1c.precision_lines.svg', 
+  figS1c, width=12, height = 6, units = 'cm')
+
+# Boxplot
+figS1d <- t_filt %>% 
+  ggplot(aes(y=precision, x=coverage, fill=side)) + 
+  geom_boxplot(alpha=0.5) + 
+  facet_wrap(~readlength) +
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Precision') + xlab('Coverage') +
+  scale_fill_brewer(palette='Dark2')
+
+figS1d
+
+ggsave(
+  '/home/cristobal/TB/projects/MTBC_IS6110-poly/workflow/results/figures/figS1d.precision_boxes.svg', 
+  figS1d, width=12, height = 6, units = 'cm')
+
+aggregate(precision~coverage+readlength+side, t_filt, mean)
+
+
+# Single assemblies affect precision, especially ASM25337
+subset(t_filt, side =='5' & false_positives > 0) %>% 
+  ggplot(aes(y=as.factor(false_positives), x=copy_number, col=assembly)) +
+  geom_jitter(width=0.05, height = 0.05, alpha=0.8) + xlab('Copy number') + ylab('False positives') +
+  scale_x_continuous(breaks = seq(0, 25, by = 2)) +
+  scale_color_brewer(palette='Set1') +
+  theme_bw()
+
+
+```
+
+
+# What affects precision?
+
+Results: there is a single case of 3 false positives, else max FP is 2. The assembly is the 
+main factor affecting precision, read length and coverage have nothing to do with it. In these
+few assemblies with false positives, the 3' side is for some reason less precise. 
+
+Whether these effects are due to misassembly or IS copies that have diverged from the 
+target IS through some biological process is unclear. These are exceptions, however; mean precision
+is overall high at 97%. 
+
+```{r}
+#adjust 0s and 1s
+t_filt$precision_adj <- (t_filt$precision * (nrow(t_filt) - 1) + 0.5) / nrow(t_filt)
+
+m_precision_beta <- betareg(precision_adj ~ assembly + coverage + readlength + side, data = t_filt, weights=t_filt$copy_number)
+
+summary(m_precision_beta)
+
+# Get odds from log odds ration
+exp(coef(m_precision_beta))
+
+# Marginal effects!
+m_precision_beta_margins <- margins(m_precision_beta)
+summary(m_precision_beta_margins)
+
+```
+
+# Are false positives due to unpaired IRs?
+Only in one assembly (ASM25337). This strain has 2 IS6110 copies and a pair of dispersed IRL and IRR. 
+
+```{r}
+subset(t_filt, side == '5' & (false_positives > 0 | unpaired > 0)) %>% 
+  ggplot(aes(x=false_positives, y=unpaired, col=assembly)) + geom_jitter(width = 0.1, height = 0.1) 
+
+```
+
+
+# Number of supporting reads
+
+- How many supporting reads can we expect at different coverages?
+- How do z-scores behave when there are few observations?
+
+```{r}
+library(ggplot2)
+
+anchors <- read.csv('workflow/results/benchmarking/detettore/ALL_anchors.tsv', sep='\t')
+head(anchors)
+
+# Split sample name
+split_col <- strsplit(anchors$strain, "_", fixed = TRUE)
+split_df <- as.data.frame(do.call(rbind, split_col))
+colnames(split_df) <- c("ASM", "COV", "RL")
+anchors <- cbind(anchors, split_df)
+
+# Plot distributions of supporting reads
+ggplot(anchors, aes(x=COV, y=num_reads, col=RL)) + 
+  geom_boxplot(size=1)  + geom_jitter(alpha=0.1) +
+  theme_bw()
+
+
+# Plot distributions of z-scores
+ggplot(anchors, aes(x=COV, y=mod_z_score,col=RL)) + 
+  geom_violin(size=1)  + geom_jitter(alpha=0.1) +
+  theme_bw()
+
+
+# Classifier to check if num_reads and/or z-score can identify false positives
+library(randomForest)
+model_rf <- randomForest(as.factor(is_false_positive) ~ num_support + z_score, data=df, ntree=500)
+print(model_rf)
+
+```
+
+
+
+
+
+

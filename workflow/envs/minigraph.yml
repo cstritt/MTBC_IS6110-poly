@@ -1,0 +1,13 @@
+name: minigraph
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - _openmp_mutex=4.5=20_gnu
+  - gfatools=0.5.5=h577a1d6_0
+  - libgcc=15.2.0=he0feb66_18
+  - libgomp=15.2.0=he0feb66_18
+  - libzlib=1.3.1=hb9d3cd8_2
+  - minigraph=0.21=h577a1d6_3
+prefix: /home/cristobal/anaconda3/envs/minigraph

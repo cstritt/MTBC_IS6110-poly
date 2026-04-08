@@ -1,0 +1,165 @@
+---
+title: "Benchmarking detettore6110"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+# Snakemake I/O
+```{r}
+paths <- tryCatch(
+  {
+    list(
+      benchmarking = snakemake@input$benchmark_summary,
+      assembly_meta = snakemake@input$assembly_metadata,
+      output_html     = snakemake@output[[1]]
+    )
+  },
+  error = function(e){
+    list(
+      benchmarking = 'workflow/results/benchmarking/detettore/benchmark_summary.tsv',
+      assembly_meta = 'metadata/Harrison2024.metadata.tsv',
+      output_html     = NULL
+    )
+  }
+)
+
+```
+
+
+# Calculate sensitivity and precision
+```{r}
+bm <- read.table(paths$benchmarking, sep='\t', header=T)
+
+bm$assembly <- as.factor(bm$assembly)
+bm$coverage <- as.factor(bm$coverage)
+bm$readlength <- as.factor(bm$readlength)
+bm$side <- as.factor(bm$side)
+
+# Recall/sensitivity and precision, false discovery rate
+bm$sensitivity = bm$true_positives / (bm$true_positives + bm$false_negatives)
+bm$precision = bm$true_positives / (bm$true_positives + bm$false_positives)
+bm$fdr = bm$false_positives / (bm$true_positives + bm$false_positives)
+
+# Number of unpaired inverted repeats
+bm$unpaired = bm$unpaired_IRL + bm$unpaired_IRR
+
+summary(bm)
+
+```
+
+
+## Table S1: benchmarking data set
+```{r}
+# Load assembly meta data
+asm_md <- read.csv(paths$assembly_meta, sep='\t')
+
+# Combine data frames
+bm_md <- bm[!duplicated(bm$assembly), c('assembly', 'copy_number', 'paired_IRs', 'paired_IRs_wrong_seq', 'unpaired_IRL', 'unpaired_IRR')]
+bm_md <- merge(bm_md, asm_md, by.x='assembly', by.y='Assembly')
+
+head(bm_md)
+
+# Write supplementary table
+write.table(bm_md, 'figures/supplement/TableS1.benchmarking_dataset.tsv', sep='\t', quote=F, row.names = F)
+
+
+```
+
+
+## Check quality of IS annotation
+Only include assemblies where the IS copy number equals the number of paired IRs. 
+This excludes the 3 assemblies where IS copies are fragmented. I'm not aware of
+biological processes that would lead to the presence of fragmented, active (!) IS 
+in the genome; the other assemblies don't show this pattern; and, finally, the
+three affected assemblies are all from the same source and based on Ion Torrent 
+short reads.
+
+In the legend, "number of annotated intact copies" is not correct, ISEScan annotated them in an untypical way. 
+
+```{r}
+library(ggplot2)
+
+# Copy nr vs. nr of unpaired IRs
+ggplot(bm, aes(copy_number, unpaired)) + geom_point() + theme_bw()
+bm[which(bm$unpaired>0), 1] %>% unique() %>% as.character()
+
+# Copy nr vs. nr of paired IS
+figS1 <- ggplot(bm, aes(copy_number, paired_IRs)) + 
+  geom_point() + theme_bw(base_family = "CMU Sans Serif", base_size=12) +
+  xlab("Number of annotated intact IS6110 copies") + 
+  ylab("Number of paired inverted repeats")
+
+figS1
+
+ggsave("figures/supplement/figS1.fragmented_copies.pdf", figS1, width = 12, height = 10, units = "cm", device = cairo_pdf)     
+
+
+# Exclude 3 assemblies
+exclude <- bm[which(bm$paired_IRs != bm$copy_number), 1] %>% unique() %>% as.character()
+exclude
+bm_filt <- subset(bm, !(assembly %in% exclude)) %>% droplevels()
+
+# How many IS copies in total?
+bm_copynr <- bm_filt[!duplicated(bm_filt$assembly), ]
+print(paste('Number of IS6110 elements analyzed for benchmarking: ', sum(bm_copynr$copy_number)))
+
+```
+
+
+## Figure S2: sensitivity and precision
+```{r}
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+
+head(bm_filt)
+
+summary(bm_filt)
+
+aggregate(sensitivity~coverage+readlength+side, bm_filt, mean)
+aggregate(precision~coverage+readlength+side, bm_filt, mean)
+
+```
+
+
+# Fig S2: Benchmarking results
+```{r}
+
+bm_filt_fig <- melt(bm_filt, id.vars=c('coverage', 'side','readlength'), measure.vars=c('precision', 'sensitivity'))
+
+bm_filt_fig$variable = as.character(bm_filt_fig$variable)
+bm_filt_fig$variable[which(bm_filt_fig$variable=='sensitivity')] <- 'Sensitivity'
+bm_filt_fig$variable[which(bm_filt_fig$variable=='precision')] <- 'Precision'
+bm_filt_fig$variable = factor(bm_filt_fig$variable, levels=c('Sensitivity', 'Precision'))
+
+
+bm_filt_fig$readlength = as.character(bm_filt_fig$readlength)
+bm_filt_fig$readlength[which(bm_filt_fig$readlength=='100')] <- '100 bp reads'
+bm_filt_fig$readlength[which(bm_filt_fig$readlength=='150')] <- '150 bp reads'
+bm_filt_fig$readlength = as.factor(bm_filt_fig$readlength)
+
+
+# Reorder factor levels
+bm_filt_fig$side = factor(bm_filt_fig$side, levels=c('5', '3'))
+str(bm_filt_fig)
+
+
+figS2 <- ggplot(bm_filt_fig, aes(y=value, x=coverage, fill=side)) +
+  geom_boxplot(outlier.size = 0.5) + facet_grid(variable~readlength) +
+  theme_bw(base_family = "CMU Sans Serif", base_size=12) +
+  scale_fill_brewer(palette='Dark2') +
+  xlab('Coverage') + ylab('') + labs(fill = "Side")
+
+figS2
+
+ggsave("figures/supplement/figS2.benchmarking.pdf", figS2, width = 15, height = 12, units = "cm",device = cairo_pdf)    
+```

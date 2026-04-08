@@ -1,0 +1,18 @@
+name: rapidnj
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+  - r
+  - nvidia
+  - pytorch
+dependencies:
+  - _libgcc_mutex=0.1=conda_forge
+  - _openmp_mutex=4.5=2_gnu
+  - libgcc=14.2.0=h77fa898_1
+  - libgcc-ng=14.2.0=h69a702a_1
+  - libgomp=14.2.0=h77fa898_1
+  - libstdcxx=14.2.0=hc0a3c3a_1
+  - libstdcxx-ng=14.2.0=h4852527_1
+  - rapidnj=2.3.2=h4ac6f70_5
+prefix: /scicore/home/gagneux/stritt0001/miniconda3/envs/rapidnj

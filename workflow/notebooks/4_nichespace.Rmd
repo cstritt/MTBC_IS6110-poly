@@ -1,0 +1,2063 @@
+---
+title: "Save genomic niches for IS6110"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+# Snakemake I/O
+```{r}
+paths <- tryCatch(
+  {
+    list(
+      rdata = snakemake@input$rdata,
+      output_html     = snakemake@output$html
+    )
+  },
+  error = function(e){
+    list(
+      rdata = 'is6110.RData',
+      output_html     = NULL  # or whatever default makes sense
+    )
+  }
+)
+
+```
+
+# Insertion sites with mappable reference position
+What is the proportion of IS that have a mappable reference position?
+
+Do analyses with 5' matrix, as no significant differences are expected with the 3'.
+
+Two observations to explain:
+  - Reference insertions with same position but different strand
+  - Anchors with multiple reference positions
+
+```{r}
+library(Biostrings)
+library(dplyr)
+library(ggplot2)
+library(dplyr)
+library(ggwordcloud)
+
+load(paths$rdata)
+
+# Number of anchors with reference position -----------------------------------
+table(matrix_metadata$side)
+with_ref_pos = which(!is.na(matrix_metadata$ref_position))
+table(matrix_metadata[with_ref_pos,]$side)
+
+prop_with_ref = table(matrix_metadata[with_ref_pos,]$side) / table(matrix_metadata$side)
+
+print(paste('Proportion of insertion sites with mappable reference position: ', prop_with_ref[1], prop_with_ref[2]))
+```
+
+
+## Explore non-mappable insertion sites
+Blast non-mappable flanking regions against all genic and intergenic regions in MTBCO to get an idea what they are.
+
+```{r}
+source('workflow/notebooks/utils.R')
+
+# Get unmapped sites
+nonmappable = subset(matrix_metadata,is.na(ref_position))
+
+# Blast flanking sequences
+matrix_metadata <- add_blast_info(matrix_metadata)
+
+# Summarize by anchor and feature
+hits_d = list()
+feature_count = list()
+
+for (i in 1:nrow(nonmappable)){
+  row = nonmappable[i,]  
+  query = paste(row$side, row$site_id, sep='_')
+  
+  hit = row$blasthit
+  if (is.na(hit)){next}
+
+  pref = substr(hit,1,2)
+  if (pref=='mt'){categ = get_alternative_gene_name(hit, genemap)}
+  else if (pref=='ig'){categ='intergenic'}
+  else if (pref=='id'){categ='repeat'}
+  else if (pref=='ge'){categ='pseudogene'}
+
+  hits_d[[query]] = categ
+
+  if (is.null(feature_count[[categ]])) {feature_count[[categ]] <- c()}
+  feature_count[[categ]] <- c(feature_count[[categ]], query)
+  
+}
+
+hits_d
+
+feature_count = lapply(feature_count, unique)
+lapply(feature_count, length)
+
+word_counts = data.frame(
+  'feature' = names(feature_count),
+  'count' = unlist(unname(lapply(feature_count, length)))
+)
+
+head(word_counts)
+
+# Word cloud
+ggplot(subset(word_counts, count>2), aes(label = feature, size = count)) +
+  geom_text_wordcloud(shape='square') +
+  scale_size_area(max_size = 20) +
+  theme_minimal()
+
+
+```
+
+
+# Genic vs. intergenic insertions
+Overrepresentation in intergenic as evidence for purifying selection. 
+Also, a higher proportion of genic insertions are expected in singleton insertions. 
+
+```{r}
+library(ggplot2)
+
+# Use 5' matrix
+matrix_metadata_five <- subset(matrix_metadata, side==5)
+
+
+# Add genic/intergenic category to matrix metadata (careful with NA values!!)
+matrix_metadata_five$context_cat <- rep('genic', nrow(matrix_metadata_five))
+matrix_metadata_five$context_cat[grepl(';', matrix_metadata_five$context)] <- 'intergenic'
+matrix_metadata_five$context_cat[which(is.na(matrix_metadata_five$context))] <- NA
+matrix_metadata_five$context_cat <- as.factor(matrix_metadata_five$context_cat)
+table(matrix_metadata_five$context_cat)
+
+# Assign frequency category singleton/shared
+matrix_metadata_five$freqcat <- rep('singleton', nrow(matrix_metadata_five))
+matrix_metadata_five$freqcat[which(matrix_metadata_five$nr_strains>1)] <- 'shared'
+matrix_metadata_five$freqcat <- as.factor(matrix_metadata_five$freqcat)
+table(matrix_metadata$freqcat)
+
+# Are intergenic insertions overrepresented?
+gff_path <- 'data/MTBC0/MTBC0v1.1_PGAP_annot.gff'
+genic_observed <- unname(table(matrix_metadata_five$context_cat)['genic'])
+intergenic_observed <- unname(table(matrix_metadata_five$context_cat)['intergenic'])
+chromosome_length = 4435783
+
+fisher_test(genic_observed, intergenic_observed,chromosome_length, gff_path)
+
+
+# What about singleton vs. shared elements?
+fig4b <- ggplot(na.omit(matrix_metadata_five), aes(context_cat, fill=freqcat)) + 
+  geom_histogram(stat='count', position='dodge') + 
+  xlab("") + ylab("Count") +
+  theme_bw(base_family = "CMU Sans Serif", base_size=14) +
+  scale_fill_brewer(palette='Dark2') +
+  guides(fill = guide_legend(title = NULL)) +   # remove legend title
+  theme(
+    legend.position = c(0.98, 0.98),            # move legend inside (normalized coordinates)
+    legend.justification = c("right", "top"),   # align legend anchor
+    legend.background = element_rect(fill = "white", color = NA),  # optional
+    legend.key.size = unit(0.5, "cm")            # optional
+  )
+fig4b
+
+
+# Hypothesis: more singleton insertions in genes because selection has not removed them
+singletons <- subset(matrix_metadata_five, freqcat=='singleton')
+shared <- subset(matrix_metadata_five, freqcat=='shared')
+
+fisher_test(
+  unname(table(singletons$context_cat)['genic']),
+  unname(table(singletons$context_cat)['intergenic']), 
+  chromosome_length,
+  gff_path
+)
+
+ratio_singletons = unname(table(singletons$context_cat)['intergenic']) /(unname(table(singletons$context_cat)['genic']) + unname(table(singletons$context_cat)['intergenic']))
+
+
+fisher_test(
+  unname(table(shared$context_cat)['genic']),
+  unname(table(shared$context_cat)['intergenic']),
+   chromosome_length,
+  gff_path
+)
+
+ratio_shared = unname(table(shared$context_cat)['intergenic']) / (unname(table(shared$context_cat)['genic']) + unname(table(shared$context_cat)['intergenic']))
+
+```
+
+
+Combine panels
+```{r}
+library(cowplot)
+library(magick)
+
+
+system("pdfcrop --margins 5 figures/main/fig4a.circos.pdf figures/main/fig4a.circos.cropped.pdf")
+
+img_circors <- image_read("figures/main/fig4a.circos.cropped.pdf", density = 600)
+p_circos  <- ggdraw() + draw_image(img_circors)
+
+left_panel <- plot_grid(
+  fig4a, fig4b, 
+  labels=c('B','C'),
+  label_size = 10,
+  ncol=2,
+  label_fontfamily='CMU Sans Serif'
+)
+
+right_panel <- plot_grid(
+  p_circos,
+  labels=c('A'),
+  label_size = 10,
+  ncol=1,
+  label_fontfamily='CMU Sans Serif'
+)
+
+plot_grid(right_panel, left_panel, 
+          nrow=2, 
+          rel_widths = c(3,1), 
+          rel_heights=c(3,1))
+
+
+ggsave('figures/main/fig5.circos_niches.png', width = 18, height = 22, units = "cm", dpi = 300) 
+
+
+```
+
+
+# Natural Mutagenesis experiment
+
+## Gene knockouts
+- add frequency aspect: shared vs. singletons
+```{r}
+source('workflow/notebooks/utils.R')
+
+head(refins)
+
+knockouts = subset(refins, context=='genic')
+intergenic = subset(refins, context=='intergenic')
+
+print(paste("Nr. of genes with insertions:", length(unique(knockouts$gene))))
+print(paste("Nr. of intergenic regions with insertions:", length(unique(intergenic$gene))))
+
+ko_genes = unique(knockouts$gene)
+ko_intergenic = unique(intergenic$gene)
+
+
+# How many genes/intergenic regions affected?
+context_df = data.frame()
+context_l = list()
+
+for (feature in unique(refins$gene)){
+  
+  feature_df = subset(refins, gene == feature)
+  nr_pos = length(unique(feature_df$position))
+  nr_lineages = length(unique(feature_df$lineage))
+  nr_strains = length(unique(feature_df$strain))
+  #resistance = feature_df$resistance[1]
+  
+  if (grepl(';', feature)){cat = 'intergenic'}
+  else {cat = 'knockout'}
+
+  row = data.frame(feature, nr_pos, nr_lineages, nr_strains, cat)
+  context_df = rbind(context_df, row)
+}
+
+head(context_df)
+dim(context_df)
+
+dim(subset(context_df, cat=='knockout'))
+dim(subset(context_df, cat=='intergenic'))
+
+```
+
+
+## Accumulation analysis
+Given the limited sample size, how many new genes are knocked out when considering new strains? 
+Do this per lineage! And for intergenic regions.
+
+Also: exclude singleton insertions
+
+```{r}
+library(vegan)
+library(ggplot2)
+
+knockout_m = matrix(nrow=length(ko_genes), ncol=length(metadata$GNUMBER))
+rownames(knockout_m) <- ko_genes
+colnames(knockout_m) <- metadata$GNUMBER
+
+for (i in 1:length(metadata$GNUMBER)){
+  s = metadata$GNUMBER[i]
+  knockout_s = subset(knockouts, strain==s)
+  knockout_m[,s] <- ifelse(ko_genes %in% knockout_s$gene, 1, 0)
+}
+
+# Get accumulation data separately for lineages
+acc_df = data.frame()
+
+for (lineage in lineage_order){
+  
+  gnrs = metadata$GNUMBER[which(metadata$LINEAGE_x==lineage)]
+  if (length(gnrs) < 100){next}
+  
+  m_l = knockout_m[,gnrs]
+  m_l <- m_l[rowSums(m_l) != 0,]
+  m_lt <- t(m_l)
+  
+  # Species accumulation curve (random permutations)
+  acc <- specaccum(m_lt, method="random", permutations=100)
+
+  df = data.frame(
+    sites = acc$sites,
+    richness = acc$richness,
+    sd = acc$sd,
+    perm = acc$perm,
+    lineage = rep(lineage,length(acc$sites))
+  )
+  acc_df = rbind(acc_df, df)
+}
+
+summary(as.factor(acc_df$lineage))
+
+col_schemes <- load_color_schemes()
+
+ggplot(subset(acc_df, lineage %in% c('L1', 'L2', 'L3', 'L4', 'L5', 'L6')), aes(x=sites, y=richness, col=lineage)) + geom_line(alpha=1, size=1)+
+  geom_line(aes(y=richness-sd,col=lineage), linetype='dashed',size=0.2) +
+  geom_line(aes(y=richness+sd,col=lineage), linetype='dashed', size=0.2) +
+  xlab("Sampled strains") + ylab("Knocked-out genes") +
+  scale_color_manual(values=col_schemes$col_scale_black) +
+  theme_bw()
+
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/figures/figX.accumulaiton_curves.pdf', width=14, height = 10, units = 'cm')
+
+# Model nr. of k.o. genes at 500 strains ~ lineage diversity * mean IS CN
+subset(acc_df, sites==500)
+
+
+```
+
+
+
+## Essentiality
+How do genes never affected by IS6110 compare to in vitro essential genes, as defined by De Jesus et al. 2017?
+
+Expectation: Many more genes should be needed in clinico!
+
+How many of the knockouts occur only once, how many in multiple strains?
+
+Are knockouts clade-specific, or are some genes affected throughout the MTBC?
+```{r}
+library(ggplot2)
+
+# Table S3 in De Jesus et al.
+orfs_dejesus <- read.csv('manuscript/literatura/DeJesus2017/orfs.csv', sep= '\t')
+
+
+# Nr. of interrupted genes: 870
+refins_dejesus <- merge(refins, orfs_dejesus, by.x='context', by.y="ORF.ID")
+refins_dejesus_ne <- subset(refins_dejesus, Final.Call=='NE')
+
+# NE in DeJesus that do not have IS6110 insertions
+ne_genes = orfs_dejesus$ORF.ID[which(orfs_dejesus$Final.Call=='NE')]
+length(ne_genes)
+
+
+
+setdiff(unique(refins_ko$gene_rv), ne_genes)
+
+table(refins_dejesus$Final.Call)
+
+refins_dejesus_es <- subset(refins_dejesus, Final.Call=='ES')
+length(unique(refins_dejesus_es$context))
+
+# Plot essentiality categories
+ggplot(refins_dejesus, aes(Final.Call)) + geom_histogram(stat='count')
+```
+
+
+
+# Hotspots
+Count how many times genic and intergenic regions were hit. 
+For the niche model: can we obtain an estimate of how much of the genome is permissible?
+
+Supplement: 
+  - figure with frequency of independend insertion sites/births per region
+  - supplementary table with hotspot summary
+Main:
+  - figure 6
+
+
+## Extend region annotation
+For the regions to be comparable to previously described hotspots and H37Rv orthologs, we generate a region table that indicates orthologs as well as insertion sequence annotations.
+
+Detettore6110 reports the gene name rather than the gene ID for facilitating exploration. 
+Not ideal for parsing, this will be changed in a future version. 
+
+```{r}
+head(genemap)
+
+
+regionmap = read.csv("data/MTBC0/MTBC.genomic_regions.tsv", sep='\t')
+head(regionmap)
+
+
+get_alt_gene_name <- function(gene_name, genemap){
+  " Get gene ID if present else mtbc0_gene_id
+  "
+  row = genemap[genemap$mtbc0_gene_id==gene_name, ]
+  if (is.na(row$gene_id)){return(gene_name)}
+  else if (nchar(row$gene_id)==0){return(gene_name)}
+  else {return(row$gene_id)}
+}
+
+detettore_name = c()
+
+for (i in 1:nrow(regionmap)){
+  region_name = regionmap$region_name[i]
+  typus = regionmap$region_type[i]
+
+  if (typus != 'intergenic'){detettore_name = c(detettore_name, region_name)}
+
+  else {
+    region_split = strsplit(region_name, ';') %>% unlist()
+    geneA = region_split[1]
+    geneB = region_split[2]
+
+    geneA_new = get_alt_gene_name(geneA, genemap)
+    geneB_new = get_alt_gene_name(geneB, genemap)
+
+    detettore_name = c(detettore_name, paste(geneA_new, geneB_new, sep=';'))
+  }
+
+}
+
+regionmap$detettore_name = detettore_name
+
+
+write.table(regionmap,"data/MTBC0/MTBC.genomic_regions.extended.tsv", sep='\t', quote=F, row.names=F)
+
+```
+
+
+
+## Summarize hotspots
+Approach: create strainXregion matrix, reconstruct ancestral states, and count 0->presence transitions. 
+
+```{r}
+load(paths$rdata)
+
+strains = tree$tip.label
+regions = unique(refins$gene)
+
+# Create empty matrix with strains in rows and regions in columns
+regionmat = matrix(
+  nrow=length(strains), 
+  ncol=length(regions),
+  dimnames=list(strains, regions)
+  )
+
+# Collect information for hotspot summary
+npos = list()
+
+# Fill matrix
+for (i in 1:nrow(refins)){
+
+  if (i%%1000==0){print(i)}
+
+  row = refins[i,]
+  strain = row$strain
+  region = row$gene
+  position = row$position
+  strand = row$strand
+
+  regionmat[strain,region] = 1
+
+  # GEt the corresponding uFS for a reference insertion
+  #if (strand == '+'){ua = subset(anchor_map, V1==row$strain & #V2==row$anchor_5)$V3}
+  #else {ua = subset(anchor_map, V1==row$strain & V2==row$anchor_3)$V3}
+  #if (length(ua) == 0){next}
+
+  # Add uFS id to matrix
+  #if (is.na(regionmat[strain,region])){regionmat[strain,region] = ua}
+  #else {
+  #  existing = regionmat[strain,region]
+  #  regionmat[strain,region] = paste(existing, ua, sep='_')
+  #}
+
+  # Collect different positions per region
+  if (!(region %in% names(npos))){
+    npos[[region]] = c(position)
+    }
+  else {
+    npos[[region]] = c(npos[[region]], position)
+    }
+}
+
+# Convert NA to 0
+regionmat[is.na(regionmat)] <- 0
+
+```
+
+
+## Reconstruct ancestral states and count number of births.
+Summary structure: region, nstrains, nbirths, ndeaths, npositions.
+Here one could also look at transitions from one uFS to another, which could indicate errors in detettore due to mutations happening after the insertion of IS6110. 
+
+```{r}
+library(ape)
+library(castor)
+library(magrittr)
+
+hotspot_summary = data.frame()
+
+for (i in 1:ncol(regionmat)){
+
+  if (i%%100==0){print(i)}
+  
+  site_vec <- regionmat[, i]
+  site_id = colnames(regionmat)[i]
+
+  # Skip constant or NA-only sites
+  if (any(is.na(site_vec)) || length(unique(site_vec)) == 1) next
+      
+  # Convert to numeric starting with 1
+  site_vec_mapped <- map_to_state_space(site_vec)
+  index2name = names(site_vec_mapped$name2index)
+  index2name <- setNames(index2name, unname(site_vec_mapped$name2index))
+
+  # Reconstruct ancestral states
+  asr_result <- asr_max_parsimony(tree, tip_states = site_vec_mapped$mapped_states)
+
+  # Go through tree and record transitions
+  ntips = length(tree$tip.label)
+  # Nr. of strains that contain an insertion in the region
+  nstrains = sum(site_vec_mapped$mapped_states!=1) 
+  # Number of different uFS
+  #nstates = site_vec_mapped$Nstates - 1
+
+  # For each node, store likelihood of presence
+  lh_presence <- asr_result$ancestral_likelihoods[,2]
+  # Combine tip and internal node states
+  full_states <- c(unname(site_vec), lh_presence)
+
+  # Count number of independent birth/insertion events
+  nbirths = 0
+  ndeaths = 0
+
+  for (j in 1:nrow(tree$edge)) {
+        
+    parent = tree$edge[j, 1]
+    child  = tree$edge[j, 2]
+
+    parent_state = full_states[parent]
+    child_state = full_states[child]
+    
+    # Get ancestral states at child node
+    #if (child <= ntips){
+    #  child_node = site_vec_mapped$mapped_states[child]
+    #  child_state = ifelse(child_node==1, 'absent', 'present')
+    #  }
+    #else{
+    #  child_node = asr_result$ancestral_likelihoods[child-ntips,]
+    #  child_state = ifelse(child_node[1]>0.5, 'absent', 'present')    
+    #  }
+    # At parent node
+    #parent_node = asr_result$ancestral_likelihoods[parent-ntips,]
+    #parent_state = ifelse(parent_node[1]>0.5, 'absent', 'present')
+
+    # No change
+    if (parent_state == child_state) next
+    # Birth
+    if (parent_state==0 & child_state==1){nbirths = nbirths+1}
+    # Death
+    else if (parent_state==1 & child_state==0){ndeaths = ndeaths+1}
+  }
+
+  row = data.frame(
+    'region' = site_id,
+    'nstrains' = nstrains,
+    'nbirths' = nbirths,
+    'ndeaths' = ndeaths
+  )
+  print(row)
+  hotspot_summary = rbind(hotspot_summary, row)
+}
+
+write.table(hotspot_summary, "workflow/results/hotspot_summary.simplified.tsv", sep='\t', quote=F, row.names = F)
+
+```
+
+
+## Add Rv ortholog names
+If there is a gene ID, use it, else use Rv ortholog name. 
+If there is no Rv ortholog, use mtbc0 locus tag.
+
+```{r}
+library(magrittr)
+
+load(paths$rdata)
+
+hotspot_summary = read.csv("workflow/results/hotspot_summary.simplified.tsv", sep='\t')
+mtbc0_regions = read.csv('data/MTBC0/MTBC.genomic_regions.tsv', sep='\t')
+
+head(hotspot_summary)
+
+
+get_alternative_gene_name <- function(genename, genemap){
+  
+  pref = substr(genename, 1,5)
+  
+  if (pref=='mtbc0'){
+    if (!(genename %in% genemap$mtbc0_gene_id)){return(genename)}
+    else {gene_id = genemap$gene_id[which(genemap$mtbc0_gene_id==genename)]}
+    
+    if (nchar(gene_id) == 0){
+      alt_name = genemap$h37rv_id[which(genemap$mtbc0_gene_id==genename)]
+    }
+    else {alt_name = gene_id}
+  }
+  else {
+    alt_name = genename
+    #rv = genename
+    #rv = genemap$h37rv_id[which(genemap$gene_id==genename)]
+  }
+  
+  #if (length(rv) > 1){
+  #  rv = rv[[1]]
+  #  print(paste('Two genemap entries for ', genename, sep=" "))
+  #}
+  if (length(alt_name) > 0){return(alt_name)}
+  else if (length(alt_name) == 0){return('None')}
+}
+
+
+alt_gene_names = c()
+
+for (region in hotspot_summary$region){
+  
+  if (grepl(';', region)){ # intergenic
+    
+    region_split = strsplit(region, ';') %>% unlist()
+    
+    geneA = region_split[1]
+    geneB = region_split[2]
+    
+    geneA_new = get_alternative_gene_name(geneA, genemap)
+    geneB_new = get_alternative_gene_name(geneB, genemap)
+    region_new = paste(geneA_new, geneB_new, sep = ';')
+    alt_gene_names = c(alt_gene_names, region_new)
+  }
+  
+  else { # genic
+    gene_new = get_alternative_gene_name(region, genemap)
+    alt_gene_names = c(alt_gene_names, gene_new)
+  }
+}
+
+hotspot_summary$region_rv = alt_gene_names
+write.table(hotspot_summary, "workflow/results/hotspot_summary.tsv", sep='\t', quote=F, row.names = F)
+
+
+```
+
+
+## FIGURE 4
+```{r}
+## Figure: hotspot overview + exemplar trees
+
+library(ggplot2)
+library(ggrepel)
+library(magrittr)
+library(ggtree)
+library(tidytree)
+library(cowplot)
+library(magick)
+library(Cairo)
+library(dplyr)
+
+load(paths$rdata)
+
+hotspot_summary = read.csv("workflow/results/hotspot_summary.tsv", sep='\t')
+regionmap = read.csv("data/MTBC0/MTBC.genomic_regions.extended.tsv", sep='\t')
+
+
+head(hotspot_summary)
+head(regionmap)
+
+
+# Detettore regions that are not in the region map
+setdiff(hotspot_summary$region, regionmap$detettore_name)
+
+# Regions that are not in detettore output
+setdiff(regionmap$detettore_name,hotspot_summary$region)
+
+
+# Load ancestral states for tree visualization
+anc_states_five <- read.csv(
+  'workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv', sep = '\t')
+names(anc_states_five) <- gsub('X', '', names(anc_states_five))
+
+
+# ── Panel A: linear genome × nbirths ─────────────────────────────────────────
+
+# Attach reference position to hotspots_summary via hotspots
+region_pos <- hotspots %>%
+  group_by(region) %>%
+  summarise(ref_position = median(as.numeric(position), na.rm = TRUE), .groups = 'drop')
+
+hs <- hotspot_summary %>%
+  left_join(region_pos, by = 'region') %>%
+  arrange(desc(nbirths))
+
+top50 <- slice_head(hs, n = 20)
+
+panelAx <- ggplot(
+  subset(hs, nbirths>10), 
+  aes(x = ref_position / 1e6, y = nbirths, size=nstrains)
+  ) +
+  geom_point(alpha = 0.4, colour = 'grey40') +
+  geom_label_repel(
+    data       = top50,
+    aes(label  = region_rv),
+    size       = 3,
+    label.size = 0,
+    max.overlaps = 40,
+    segment.colour = 'grey60',
+    segment.size   = 0.3
+  ) +
+  scale_x_continuous(
+    name   = 'Genomic position (Mb)',
+    limits = c(0, 4.44),
+    breaks = seq(0, 4, 0.5)
+  ) +
+  ylab('Inferred births') +
+  theme_bw(base_family = 'CMU Sans Serif', base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    legend.position = c(0.98, 0.98),
+    legend.justification = c(1, 1),
+    strip.background = element_blank()
+  )
+
+panelAx
+
+
+# More informative: nstrains vs. nbirths!
+panelA <- ggplot() + 
+  geom_jitter(
+    data=subset(hotspot_summary, nbirths>1), 
+    aes(nbirths,nstrains), 
+    alpha=0.2, size=2) +
+  geom_label_repel(
+    data=subset(hotspot_summary, nstrains>500 | nbirths>100), 
+    aes(nbirths, nstrains, label=region_rv), 
+    label.size=0, 
+    size = 3) + 
+  theme_bw(base_family = "CMU Sans Serif", base_size = 14) +
+  ylab("Nr. of strains") + xlab("Inferred births (log scale)") +
+  scale_x_log10()
+
+panelA
+
+
+
+
+
+# ── Panel B: exemplar hotspot trees ──────────────────────────────────────────
+
+# Choose which hotspots to show: top N by nbirths (skip any missing from ASR)
+n_trees   <- 12          # set to 6 or 9
+top_spots <- hs %>%
+  filter(region %in% colnames(anc_states_five) |
+           region %in% hotspots$region) %>%
+  slice_head(n = n_trees)
+
+p_base <- ggtree(tree, layout = 'circular', col = 'grey90',
+                 size = 0.1, alpha = 0.8) %<+% metadata
+
+tree_pdfs <- character(n_trees)
+
+for (i in seq_len(nrow(top_spots))) {
+
+  focal      <- top_spots$region[i]
+  label_name <- if (!is.na(top_spots$region_rv[i])) top_spots$region_rv[i] else focal
+  nb         <- top_spots$nbirths[i]
+
+  hotspots_sub <- subset(hotspots, region == focal)
+  site_ids     <- hotspots_sub$site_id[hotspots_sub$site_id %in% names(anc_states_five)]
+  if (length(site_ids) == 0) next
+
+  anc_states_sub <- anc_states_five[, c('node', site_ids), drop = FALSE]
+  prob_mat       <- as.matrix(anc_states_sub[, -1, drop = FALSE])
+
+  max_prob  <- apply(prob_mat, 1, max)
+  hit_col   <- apply(prob_mat, 1, which.max)
+
+  anc_state_compressed <- data.frame(
+    node           = anc_states_sub$node,
+    insertion_site = ifelse(max_prob > 0.5,
+                            colnames(prob_mat)[hit_col],
+                            NA_character_)
+  )
+
+  pd <- p_base$data
+  pd$insertion_site <- anc_state_compressed$insertion_site[
+    match(pd$node, anc_state_compressed$node)]
+
+  n_sites <- length(unique(na.omit(pd$insertion_site)))
+  pal     <- scales::hue_pal()(max(n_sites, 1))
+
+  p_tree <- p_base +
+    geom_tree(
+      data = subset(pd, !is.na(insertion_site)),
+      #aes(colour = insertion_site),
+      size = 0.35
+    ) +
+    #scale_colour_manual(values = pal) +
+    labs(caption = sprintf('%s', label_name)) +
+    theme(
+      legend.position  = 'none',
+      plot.caption = element_text(size = 7, hjust = 0.5, margin = margin(t = -35)),
+      plot.caption.position = 'plot', 
+      plot.title      = element_text(size = 7, hjust = 0.5),
+      plot.background = element_rect(fill = NA, color = NA),
+      panel.background = element_rect(fill = NA, color = NA)
+    )
+
+  # Save individual tree to temp PDF, then crop
+  tmp_raw    <- tempfile(fileext = '.pdf')
+  tmp_crop   <- tempfile(fileext = '.pdf')
+
+  ggsave(tmp_raw, plot = p_tree,
+         width = 6, height = 6, units = 'cm', device = cairo_pdf)
+  system(paste('pdfcrop', tmp_raw, tmp_crop))
+
+  tree_pdfs[i] <- tmp_crop
+}
+
+# Read cropped PDFs back as ggdraw panels
+tree_panels <- lapply(tree_pdfs[nzchar(tree_pdfs)], function(f) {
+  img <- image_read(f, density = 250)
+  ggdraw() + draw_image(img)
+})
+
+n_cols   <- 4
+n_rows   <- ceiling(length(tree_panels) / n_cols)
+panelB   <- plot_grid(plotlist = tree_panels, ncol = n_cols, nrow = n_rows)
+panelB
+
+# ── Combine and save ──────────────────────────────────────────────────────────
+
+full_fig <- plot_grid(
+  panelA, panelB,
+  nrow        = 2,
+  rel_heights = c(1.8, n_rows * 0.9),
+  labels      = c('A', 'B'),
+  label_fontfamily = 'CMU Sans Serif',
+  label_size  = 12
+)
+
+ggsave('figures/main/fig_hotspots.png',
+       plot   = full_fig,
+       width  = 30, height = 10 + n_rows * 6,
+       units  = 'cm',
+       dpi = 300)
+
+full_fig
+```
+
+
+## TABLE 2: top hotspots
+Table header: hotspot name, nbirths, nstrains, Rv orthologs, Products
+
+```{r}
+library(gt)
+library(magrittr)
+library(tidyverse)
+library(ggplot2)
+
+
+head(hotspot_summary)
+
+# Sort table and pick top 12 hotspots
+toptwelve <- hotspot_summary[order(hotspot_summary$nbirths, decreasing = T),][1:12,]
+
+
+```
+
+## Characterize hotspot regions
+```{r}
+library(ggplot2)
+
+head(hotspot_summary2)
+
+hotspot_summary2$type = rep('genic', nrow(hotspot_summary2))
+hotspot_summary2$type [grepl(';', hotspot_summary2$region)] <- 'intergenic'
+
+
+dim(hotspot_summary2)
+table(hotspot_summary2$nbirths)
+table(hotspot_summary2$nstrains)
+
+# Check single disruptions
+ggplot(subset(hotspot_summary2, nbirths==1), aes(nstrains)) + 
+  geom_histogram()
+
+table(subset(hotspot_summary2, nbirths==1)$nstrains)
+
+# Proportion of regions with < 10 disruptions
+nrow(subset(hotspot_summary2, nbirths<10))
+
+nrow(subset(hotspot_summary2, nbirths>20))
+nrow(subset(hotspot_summary2, nbirths>50))
+
+
+# Frequency of disruptions
+ggplot(hotspot_summary, aes(nbirths)) + geom_histogram()
+ggplot(hotspot_summary, aes(nbirths, nstrains)) + geom_point() + geom_smooth()
+
+cor(hotspot_summary$nbirths, hotspot_summary$nstrains)
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+
+summary(subset(hotspots_summary, nbirths>1))
+summary(subset(hotspots_summary, nbirths>10))
+summary(subset(hotspots_summary, nbirths>20))
+summary(subset(hotspots_summary, nbirths>50))
+
+
+ggplot(subset(hotspots_summary, nbirths>1),aes(x=nbirths)) + geom_step(aes(y=..y..),stat="ecdf")
+
+ggplot(subset(hotspots_summary, nbirths>1),aes(x=nbirths)) + geom_density()
+
+
+```
+
+
+## Gene set enrichment
+
+```{r}
+# ============================================================
+# GSEA of IS6110 insertion hotspots using GFF GO annotations
+# ============================================================
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(clusterProfiler)  # or fgsea
+
+# ============================================================
+# 1. Parse GO terms from GFF
+# ============================================================
+
+parse_gff_go <- function(gff_path) {
+  lines <- readLines(gff_path)
+  # Keep only CDS lines
+  cds_lines <- lines[grepl("\tCDS\t", lines)]
+  
+  result <- lapply(cds_lines, function(line) {
+    fields <- strsplit(line, "\t")[[1]]
+    attr  <- fields[9]
+    
+    # Extract locus_tag
+    locus <- str_match(attr, "locus_tag=([^;]+)")[,2]
+    
+    # Extract GO terms from Ontology_term
+    go_raw <- str_match(attr, "Ontology_term=([^;]+)")[,2]
+    if (is.na(go_raw)) return(NULL)
+    
+    go_terms <- str_split(go_raw, ",")[[1]]
+    go_terms <- go_terms[grepl("^GO:", go_terms)]
+    
+    if (length(go_terms) == 0) return(NULL)
+    
+    data.frame(gene = locus, go_id = go_terms, stringsAsFactors = FALSE)
+  })
+  
+  bind_rows(result)
+}
+
+go_annotations <- parse_gff_go("data/MTBC0/MTBC0v1.1_PGAP_annot.gff")
+
+# Build term2gene and term2name for clusterProfiler
+term2gene <- go_annotations[, c("go_id", "gene")]
+
+# Optional: fetch GO descriptions (requires AnnotationDbi / GO.db)
+# library(GO.db)
+# term2name <- AnnotationDbi::select(GO.db, keys=unique(term2gene$go_id),
+#                                    columns="TERM", keytype="GOID") %>%
+#   rename(go_id = GOID, name = TERM)
+
+# ============================================================
+# 2. Prepare hotspot ranking
+# ============================================================
+# Assumes hotspots_summary has columns: region, nbirths
+# 'region' is a gene locus_tag (genic) or "geneA;geneB" (intergenic)
+
+hotspots_summary <- read.csv("workflow/results/hotspot_summary.tsv", sep = "\t")
+
+# Keep only genic hotspots (intergenic regions have ';')
+genic_hotspots <- hotspots_summary %>%
+  filter(!grepl(";", region)) %>%
+  arrange(desc(nbirths))
+
+
+ggplot(genic_hotspots, aes(nbirths)) + geom_histogram() + scale_x_log10()
+
+
+
+
+
+# ============================================================
+# 3a. Over-representation analysis (ORA) on top hotspots
+# ============================================================
+
+hotspot_threshold = 10
+
+gene_list_top  <- subset(genic_hotspots, nbirths >= hotspot_threshold)$region
+gene_universe  <- genic_hotspots$region  # all tested genes
+
+ora_result <- enricher(
+  gene      = gene_list_top,
+  universe  = gene_universe,
+  TERM2GENE = term2gene,
+  # TERM2NAME = term2name,   # uncomment if you have GO names
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2
+)
+
+summary(ora_result)
+dotplot(ora_result)
+
+# ============================================================
+# 3b. GSEA (ranked, uses all genes — more powerful)
+# ============================================================
+
+ranked_vec <- setNames(genic_hotspots$nbirths, genic_hotspots$region)
+
+gsea_result <- GSEA(
+  geneList      = sort(ranked_vec, decreasing = TRUE),
+  TERM2GENE     = term2gene,
+  # TERM2NAME   = term2name,
+  pAdjustMethod = "BH",
+  pvalueCutoff  = 0.05,
+  minGSSize     = 5,
+  maxGSSize     = 500,
+  seed          = 42
+)
+
+dotplot(gsea_result)
+gseaplot2(gsea_result, geneSetID = 1)  # plot top hit
+
+# ============================================================
+# 4. Alternative: use go_function / go_process free-text field
+#    (richer but needs mapping to GO IDs)
+# ============================================================
+
+parse_gff_go_verbose <- function(gff_path) {
+  lines <- readLines(gff_path)
+  cds_lines <- lines[grepl("\tCDS\t", lines)]
+  
+  lapply(cds_lines, function(line) {
+    attr  <- strsplit(line, "\t")[[1]][9]
+    locus <- str_match(attr, "locus_tag=([^;]+)")[,2]
+    
+    go_fn  <- str_match(attr, "go_function=([^;]+)")[,2]
+    go_pro <- str_match(attr, "go_process=([^;]+)")[,2]
+    
+    # Parse: "description|GOID||evidence"
+    parse_go_field <- function(field) {
+      if (is.na(field)) return(NULL)
+      entries <- str_split(field, ",")[[1]]
+      go_ids  <- str_match(entries, "\\|(GO:\\d+)\\|")[,2]
+      go_ids[!is.na(go_ids)]
+    }
+    
+    go_terms <- c(parse_go_field(go_fn), parse_go_field(go_pro))
+    if (length(go_terms) == 0) return(NULL)
+    data.frame(gene = locus, go_id = go_terms, stringsAsFactors = FALSE)
+  }) %>% bind_rows()
+}
+
+# Use this instead of (or combined with) parse_gff_go() above
+go_annotations_v2 <- parse_gff_go_verbose("MTBC0v1.1_PGAP_annot.gff")
+```
+
+
+
+## Plot hotspot summary
+```{r}
+# How do measures of parallelism compare?
+ggplot(subset(hotspots_summary, nbirths>1), aes(nsites, API)) + geom_point(alpha=0.6) +
+  geom_label_repel(data=subset(hotspots_summary, API>20), aes(label=region), label.size=0, size = 3) +
+  theme_bw() + 
+  xlab("Number of independent insertion sites") + ylab("Parallelism index") +
+  scale_color_viridis(option='A', end = 0.8)
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/presentations/labmeeting.21-10-2025/figures/adaptive_parallelism.pdf', width=22, height = 17, units = 'cm')
+
+
+
+# Nr independent insertion sites vs. nr independent insertions
+panelA <- ggplot(subset(hotspots_summary), aes(strains_total, nbirths)) + geom_point(alpha=0.4) +
+  geom_label_repel(data=subset(hotspots_summary, nbirths>100 | strains_total>1500), aes(label=region), label.size=0, size = 3) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 14) +
+  xlab("Nr. of strains") + ylab("Nr. of independent births") +
+  theme(
+    legend.position = c(1, 0),              # Bottom right inside the plot
+    legend.justification = c("right", "bottom"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(1, "cm"),          # Smaller legend key
+    legend.key.width = unit(2, "cm"),
+    legend.text = element_text(size = 12),         # Smaller text
+    legend.title = element_text(size = 12)
+  ) +
+    scale_size(name = "Nr. of strains")
+
+panelA
+
+# Distribution of PI/nsites etc
+table(hotspots_summary$nsites)
+
+ggplot(hotspots_summary, aes(nsites)) + geom_histogram() +  theme_bw() + xlab('Number of independent insertion sites') + ylab("Count")
+
+ggplot(hotspots_summary, aes(nbirths)) + geom_histogram() +  theme_bw() + xlab('Number of independent insertion events') + ylab("Count")
+
+
+# Show both in one
+library(reshape2)
+melt(hotspots_summary, id.vars=c('region'), measure.vars = c('nsites', 'nbirths')) %>%
+  ggplot(aes(value, fill=variable)) + geom_histogram(position='dodge', bins=20) + 
+  theme_bw(base_family = "CMU Sans Serif", base_size = 14) +
+  scale_fill_brewer(palette='Dark2') +
+  theme(
+    legend.position = c(1, 1),              # Bottom right inside the plot
+    legend.justification = c("right", "top"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(1, "cm"),          # Smaller legend key
+    legend.key.width = unit(1, "cm"),
+    legend.text = element_text(size = 12),         # Smaller text
+    legend.title = element_text(size = 12)
+  )
+
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/presentations/labmeeting.21-10-2025/figures/n_indepentend_sites_dist.pdf', width=15, height = 10, units = 'cm')
+```
+ 
+
+## Plot hotspot on tree
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggtree)
+library(tidytree)
+library(RColorBrewer)
+library(ggrepel)
+library(viridis)
+
+hotspot_cnt = as.data.frame(table(hotspots$region))
+
+# Get ancestral states. For region of interest, add states to tree
+anc_states_five = read.csv('workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv', sep='\t')
+names(anc_states_five) <- gsub('X', '', names(anc_states_five))
+
+p <- ggtree(tree, layout="circular", col='grey90',size=0.1, alpha=0.8) %<+% metadata
+
+
+# example: mtbc0_001868 (plcD)
+hotspots_of_interest = c('dnaA;dnaN', 'mtbc0_000805;phoP', 'mtbc0_001868','mtbc0_001879;mtbc0_001880','mtbc0_002031')
+
+
+focal = 'ctpD'
+focal='mtbc0_003539;mtbc0_003540'
+focal='mtbc0_000845;mtbc0_000846'
+hotspots_sub = subset(hotspots, region == focal)  
+anc_states_sub = anc_states_five[,c('node', hotspots_sub$site_id)]
+
+# Are there strains with multiple insertions in the same region? Yes
+table(rowSums(anc_states_sub[,-1]))
+
+
+# Create two new columns for the tree: insertion_site, births
+anc_state_compressed <- data.frame(
+  'node' = anc_states_sub$node,
+  'insertion_site' = rep(NA, nrow(anc_states_sub))
+)
+
+for (site_id in hotspots_sub$site_id){
+  anc_state_compressed$insertion_site[which(anc_states_sub[[site_id]]>0.5)] <- site_id
+}
+
+p$data$insertion_site = anc_state_compressed$insertion_site[match(p$data$node, anc_state_compressed$node)]
+
+p + geom_tree(data=subset(p$data, !(is.na(insertion_site))), size=0.3) + theme(legend.position = "none")
+
+ggsave("figures/main/fig6b.plcD_hotspot.pdf", 
+       width = 13, height = 13, units = "cm",
+       device = cairo_pdf)      # full-vector
+
+system("pdfcrop --margins 5 figures/main/fig6b.plcD_hotspot.pdf figures/main/fig6b.plcD_hotspot.cropped.pdf")
+
+
+img_tree <- image_read("figures/main/fig6b.plcD_hotspot.cropped.pdf", density = 300)
+panelB  <- ggdraw() + draw_image(img_tree)
+
+lower = cowplot::plot_grid(panelB, panelB)
+
+
+cowplot::plot_grid(panelA, lower, nrow=2, rel_heights = c(2,1))
+
+
+# Save tree to file and crop white space
+#dest = paste("presentations/labmeeting.21-10-2025/figures/", focal, '.pdf')
+#ggsave(dest, width = 15, height = 15, units = "cm", device = cairo_pdf) 
+
+
+```
+
+
+### Write hotspot trees to pdf
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggtree)
+library(tidytree)
+library(cowplot)
+library(Cairo)
+library(dplyr)
+
+load(paths$rdata)
+
+# Load ancestral states
+anc_states_five <- read.csv(
+  'workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv', sep = '\t')
+names(anc_states_five) <- gsub('X', '', names(anc_states_five))
+
+# Pick top 20 hotspots by nbirths
+top20 <- hotspot_summary2 %>%
+  arrange(desc(nbirths)) %>%
+  slice_head(n = 40)
+
+# Base tree (circular, tip labels off)
+p_base <- ggtree(tree, layout = "circular", col = 'grey90', size = 0.1, alpha = 0.8) %<+% metadata
+
+# Build one plot per hotspot
+tree_plots <- lapply(seq_len(nrow(top20)), function(i) {
+  
+  focal       <- top20$region[i]
+  label_name  <- if (!is.na(top20$region[i])) top20$region[i] else focal
+  nb          <- top20$nbirths[i]
+  
+  hotspots_sub <- subset(hotspots, region == focal)
+  
+  # Guard: skip if no site columns found
+  site_ids <- hotspots_sub$site_id
+  site_ids <- site_ids[site_ids %in% names(anc_states_five)]
+  if (length(site_ids) == 0) return(NULL)
+  
+  anc_states_sub <- anc_states_five[, c('node', site_ids), drop = FALSE]
+  prob_mat       <- as.matrix(anc_states_sub[, -1, drop = FALSE])
+  
+  # Assign each node to the highest-probability site (if any site > 0.5)
+  max_prob  <- apply(prob_mat, 1, max)
+  hit_col   <- apply(prob_mat, 1, which.max)
+  
+  anc_state_compressed <- data.frame(
+    node           = anc_states_sub$node,
+    insertion_site = ifelse(
+      max_prob > 0.5,
+      colnames(prob_mat)[hit_col],
+      NA_character_
+    )
+  )
+  
+  # Merge into tree data
+  pd <- p_base$data
+  pd$insertion_site <- anc_state_compressed$insertion_site[
+    match(pd$node, anc_state_compressed$node)]
+  
+  n_sites <- length(unique(na.omit(pd$insertion_site)))
+  pal     <- scales::hue_pal()(max(n_sites, 1))
+  
+  p_out <- p_base +
+    geom_tree(
+      data   = subset(pd, !is.na(insertion_site)),
+      #aes(col = insertion_site),
+      size   = 0.4
+    ) +
+    #scale_color_manual(values = pal) +
+    ggtitle(sprintf("%s\n(births = %f)", label_name, nb)) +
+    theme(
+      legend.position  = "none",
+      plot.title       = element_text(
+        size   = 7,
+        hjust  = 0.5,
+        margin = margin(b = 2)
+      ),
+      plot.margin = margin(3, 3, 3, 3)
+    )
+  
+  p_out
+})
+
+# Remove NULLs (sites with no ASR data)
+tree_plots <- Filter(Negate(is.null), tree_plots)
+
+# Arrange into pages of 6 (2 cols × 3 rows)
+plots_per_page <- 6
+n_pages        <- ceiling(length(tree_plots) / plots_per_page)
+
+CairoPDF("figures/supplement/figSx.top20_hotspots_on_tree.pdf",
+         width = 14, height = 21)   # A4-ish portrait
+
+for (pg in seq_len(n_pages)) {
+  
+  idx   <- ((pg - 1) * plots_per_page + 1) : min(pg * plots_per_page, length(tree_plots))
+  page_plots <- tree_plots[idx]
+  
+  # Pad to full grid if last page is short
+  while (length(page_plots) < plots_per_page) {
+    page_plots <- c(page_plots, list(ggplot() + theme_void()))
+  }
+  
+  grid <- plot_grid(
+    plotlist = page_plots,
+    ncol     = 2,
+    nrow     = 3
+  )
+  
+  print(grid)
+}
+
+dev.off()
+```
+
+
+
+
+## Subtree for exploration: PPE34 insertions in L2
+Check out hotspot regions where there might be issues with uFS multiplication 
+through post-insertion mutations.
+```{r}
+load(paths$rdata)
+
+# Get ancestral states. For region of interest, add states to tree
+anc_states_five = read.csv('workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv', sep='\t')
+names(anc_states_five) <- gsub('X', '', names(anc_states_five))
+```
+
+
+```{r}
+library(ape)
+library(ggtree)
+library(tidytree)
+library(treeio)
+
+lineage = 'L4'
+r = 'mtbc0_002993;cas2'
+#r = 'mtbc0_002031'
+
+mrca_node = mrcas$node[which(mrcas$lineage==lineage)]
+strains = metadata$GNUMBER[which(metadata$lineage==lineage)]
+
+p <- ggtree(tree, col='grey80',size=0.5, alpha=0.8) %<+% metadata
+
+# Add region info vectorized
+hotspots_sub = subset(hotspots, region == r)
+anc_states_sub = anc_states_five[,c('node', hotspots_sub$site_id)]
+prob_mat <- as.matrix(anc_states_sub[, -1])
+
+# find column index of first site > 0.5 per row
+hit_index <- max.col(prob_mat > 0.5, ties.method = "first")
+
+# rows with no hits
+no_hit <- rowSums(prob_mat > 0.5) == 0
+
+# build compressed dataframe
+anc_state_compressed <- data.frame(
+  node = anc_states_sub$node,
+  insertion_site = colnames(prob_mat)[hit_index]
+)
+
+anc_state_compressed$insertion_site[no_hit] <- NA
+
+# Are there strains with multiple insertions in the same region? Yes
+table(rowSums(anc_states_sub[,-1]))
+
+anc_state_long <- as.data.frame(which(prob_mat > 0.5, arr.ind = TRUE))
+anc_state_long$node <- anc_states_sub$node[anc_state_long$row]
+anc_state_long$insertion_site <- colnames(prob_mat)[anc_state_long$col]
+anc_state_long <- anc_state_long[, c("node", "insertion_site")]
+
+
+p$data$insertion_site = anc_state_compressed$insertion_site[match(p$data$node, anc_state_compressed$node)]
+
+p +
+  geom_tree(data=subset(p$data, !(is.na(insertion_site))), aes(col=insertion_site),size=0.3) +
+  geom_zoom_clade(node = mrca_node) +
+  theme(legend.position = "none")
+  #geom_hilight(node = mrca_node)
+
+# Which uFS are these?
+sort(table(p$data$insertion_site[which(p$data$label %in% strains)]))
+
+```
+
+Extract uFS from fasta in order to align them
+```{r}
+library(Biostrings)
+ufs_fasta = 'workflow/results/detettore/ALL_unique_anchors.fasta'
+
+fasta_file <- readDNAStringSet(ufs_fasta)
+
+
+
+# List of patterns to grep for
+patterns = unique(p$data$insertion_site[which(p$data$label %in% strains)])[-2]
+
+# Subset the sequences based on the patterns
+subset_seqs <- lapply(patterns, function(pattern) {
+  fasta_file[grep(pattern = pattern, x = names(fasta_file))]
+})
+
+# Concatenate the subset sequences into a single FASTA file
+combined_fasta <- DNAStringSet()
+for (i in seq_along(subset_seqs)) {
+  combined_fasta <- c(combined_fasta, subset_seqs[[i]])
+}
+
+# Write the combined sequences to a single FASTA file
+writeXStringSet(combined_fasta, "explorations/detettore/breakpoint_drift/5.uFS.mtbc0_002993-cas2.fasta")
+
+
+```
+
+
+
+## Plot gene models and mutations
+```{r}
+library(ggplot2)
+
+head(genemap)
+head(hotspot)
+
+focal = 'mtbc0_000805;phoP'
+
+# Get mutations
+hotspot_sub = subset(hotspots, region == focal)
+hotspot_sub$position <- as.integer(hotspot_sub$position)
+
+# Create data frame with gene coordinates
+focal_splt = strsplit(focal, ';') %>% unlist()
+geneA = focal_splt[1]
+geneB = focal_splt[2]
+
+genemap_sub = subset(genemap, mtbc0_gene_id == geneA | gene_id == geneA | mtbc0_gene_id == geneB| gene_id == geneB)
+genemap_sub$length = genemap_sub$end - genemap_sub$start
+genemap_sub$mid = genemap_sub$start + (genemap_sub$length/2)
+
+# --- Compute x-axis limits based on mutation positions ---
+x_min <- min(hotspot_sub$position) - 100
+x_max <- max(hotspot_sub$position) + 100
+
+# --- Define y positions for layers ---
+gene_ymin <- 0
+gene_ymax <- 0.02   # thin rectangles
+label_y   <- 0.01   # vertically centered labels
+mut_y     <- 0.025   # triangles above genes
+
+# --- Plot ---
+ggplot() +
+  
+  geom_rect(
+    data = genemap_sub,
+    aes(xmin = start, xmax = end, ymin = gene_ymin, ymax = gene_ymax),
+    color = "black", fill = "steelblue", alpha = 0.6
+  ) +
+  geom_text(
+    data = genemap_sub,
+    aes(x = mid, y = label_y, label = gene_id),
+    size = 5, vjust = 0.5, color = "black"
+  ) +
+  geom_point(
+    data = hotspot_sub,
+    aes(x = as.integer(position), fill = births, y = mut_y),
+    shape = 25, size = 6, alpha = 0.4, color = "black"
+  ) +
+  scale_fill_viridis_c(option = "plasma", direction = -1) +
+  xlab("Genomic position") +
+  coord_cartesian(xlim = c(x_min, x_max), ylim = c(0, 0.05), expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.title       = element_blank(),
+    axis.title.y       = element_blank(),
+    axis.text.y        = element_blank(),
+    axis.ticks.y       = element_blank(),
+    axis.line.y        = element_blank()
+  )
+  
+```
+
+
+
+
+## Genic vs- intergenic regions
+
+```{r}
+regions <- read.csv("./data/MTBC0/MTBC.genomic_regions.tsv", sep='\t')
+head(regions)
+
+tapply(regions$length, regions$region_type, summary)
+
+ggplot(regions, aes(length,col=region_type)) + geom_density() +
+  scale_x_log10()
+
+```
+
+
+# Target site preferences
+
+```{r}
+
+
+
+
+```
+
+
+# The breakpoint drift problem
+Detect and collapse breakpoint-drift uFS
+For each region with >1 uFS, test all pairs for phylogenetic nesting.
+Nested pairs (one clade contained within the other, zero co-occurrence) are merged into a single representative uFS before birth counting.
+
+```{r}
+library(ape)
+library(dplyr)
+
+# --- 1. Build strain × uFS presence-absence matrix from ancestral likelihoods tip rows ---
+# anc_states_five rows 1:Ntips correspond to tree tips in tree$tip.label order
+ntips <- length(tree$tip.label)
+tip_rows <- anc_states_five[seq_len(ntips), ]          # tip states only
+rownames(tip_rows) <- tree$tip.label
+
+site_cols <- setdiff(names(tip_rows), "node")
+ufs_mat   <- (as.matrix(tip_rows[, site_cols]) > 0.5) * 1L
+# ufs_mat: rows = strains, cols = site_ids (uFS)
+
+# --- 2. Map each uFS to its region ---
+ufs_region <- setNames(hotspots$region, hotspots$site_id)
+
+# --- 3. Test all within-region pairs for nesting ---
+regions_multi <- names(which(table(hotspots$region) > 1))
+
+nesting_results <- lapply(regions_multi, function(r) {
+  
+  sites <- hotspots$site_id[hotspots$region == r]
+  # Keep only sites present in matrix
+  sites <- sites[sites %in% colnames(ufs_mat)]
+  if (length(sites) < 2) return(NULL)
+  
+  pairs <- combn(sites, 2, simplify = FALSE)
+  
+  res <- lapply(pairs, function(p) {
+    test_phylo_nesting(p[1], p[2], ufs_mat, tree)
+  })
+  
+  do.call(rbind, Filter(Negate(is.null), res))
+})
+
+nesting_df <- do.call(rbind, Filter(Negate(is.null), nesting_results))
+
+# How many nested pairs?
+cat("Total within-region pairs tested:", nrow(nesting_df), "\n")
+cat("Nested pairs (breakpoint-drift candidates):", sum(nesting_df$nested), "\n")
+cat("Of which with zero co-occurrence:", 
+    sum(nesting_df$nested & nesting_df$cooccurring == 0), "\n")
+
+# --- 4. Build merge map: collapse nested, non-co-occurring uFS ---
+# Strategy: within each connected component of nested pairs, keep the uFS
+# with the highest nstrains as the representative.
+
+# Filter to high-confidence drift: nested AND mutually exclusive
+drift_pairs <- subset(nesting_df, nested & cooccurring == 0)
+
+# Build connected components via union-find
+merge_map <- setNames(hotspots$site_id, hotspots$site_id)   # identity map
+
+if (nrow(drift_pairs) > 0) {
+  
+  find <- function(x, parent) {
+    while (parent[x] != x) x <- parent[x] <- parent[parent[x]]
+    x
+  }
+  union <- function(a, b, parent) {
+    ra <- find(a, parent); rb <- find(b, parent)
+    if (ra != rb) parent[ra] <- rb
+    parent
+  }
+  
+  all_sites <- unique(c(drift_pairs$siteA, drift_pairs$siteB))
+  parent    <- setNames(all_sites, all_sites)
+  
+  for (k in seq_len(nrow(drift_pairs))) {
+    parent <- union(drift_pairs$siteA[k], drift_pairs$siteB[k], parent)
+  }
+  
+  # For each component, elect the representative = highest nstrains
+  components <- tapply(
+    all_sites,
+    sapply(all_sites, find, parent = parent),
+    identity
+  )
+  
+  for (comp in components) {
+    rep_site <- comp[which.max(hotspots$nstrains[match(comp, hotspots$site_id)])]
+    for (s in comp) merge_map[s] <- rep_site
+  }
+}
+
+n_merged <- sum(merge_map != names(merge_map))
+cat("uFS collapsed into representatives:", n_merged, "\n")
+cat("Unique representatives elected:", length(unique(merge_map[merge_map != names(merge_map)])), "\n")
+
+# --- 5. Apply merge map to hotspots ---
+hotspots$site_id_original <- hotspots$site_id          # keep original for traceability
+hotspots$site_id_merged   <- merge_map[hotspots$site_id]
+hotspots$is_drift         <- hotspots$site_id_merged != hotspots$site_id
+
+# Remove the non-representative members of each merged group
+hotspots_corrected <- hotspots %>%
+  filter(!is_drift) %>%
+  select(-is_drift)
+
+cat("hotspots rows before correction:", nrow(hotspots), "\n")
+cat("hotspots rows after  correction:", nrow(hotspots_corrected), "\n")
+
+# Overwrite hotspots for all downstream use
+hotspots <- hotspots_corrected
+```
+
+
+
+# L2 vs La3 hotspots
+```{r}
+
+```
+
+
+
+
+
+# Supplement
+
+## Circos plot: overview of insertion sites
+- add positions/density of DeJesus' essential genes
+- add oriC location
+
+```{r}
+library(ape)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(Cairo)
+library(circlize)
+library(ComplexHeatmap)
+
+
+custom_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3')
+
+# Sort according to the phylogenetic tree!
+refins_ordered <- subset(refins, lineage %in% custom_order) %>% mutate(column_name = factor(strain, levels = rev(tree$tip.label))) %>% arrange(column_name)
+head(refins_ordered)
+
+# Reduce number of strains: Get n per lineage
+n = 500
+strains_reduced = c()
+for (lineage in rev(custom_order)){
+  strains_lineage = unique(refins_ordered$strain[refins_ordered$lineage==lineage])
+  if (length(strains_lineage) == 0){next}
+  if (length(strains_lineage) <= n){strains_reduced = c(strains_reduced, strains_lineage)}
+  else {
+    strains_sample = sample(strains_lineage, n)
+    strains_reduced = c(strains_reduced, strains_sample)
+  }
+}
+length(strains_reduced)
+
+# Create list of bed files, per strain, for circos
+bed_list = list()
+colori = c()
+
+refins_reduced <- subset(refins_ordered, strain %in% strains_reduced)
+head(refins_reduced)
+
+strains_ordered <- unique(refins_reduced$strain)
+
+for (i in 1:length(strains_ordered)){
+  
+  df <- subset(refins_reduced, strain==strains_ordered[i])
+  bed <- data.frame(
+    'chr' = df$chromosome,
+    'start' = df$position,
+    'end' = df$position+1,
+    'lineage' = df$lineage
+  )
+  
+  bed_list[[i]] <- bed
+  
+  # Now the lineage color
+  lineage =df$lineage[1]
+  col = mtb_col_scale[lineage]
+  colori <- c(colori, col)
+}
+
+length(bed_list)
+length(colori)
+
+genome = data.frame(chr  = "MTBC0", start = 1,end   = 4435783) 
+
+# Define color legend
+lineages = names(mtb_col_scale)
+lineages = lineages[lineages %in% unique(refins$lineage)]
+colorrs = mtb_col_scale[lineages]
+
+
+
+```
+
+Plot the circle
+```{r}
+lgd = Legend(
+  at = lineages, type = "lines", 
+  legend_gp = gpar(col = colorrs, lwd = 2), 
+  title_gp = gpar(fontfamily = "CMU Sans Serif", fontsize = 10),
+  labels_gp = gpar(fontfamily = "CMU Sans Serif", fontsize = 10),
+  title_position = "topleft", 
+  title = "Lineage", break_dist = 2)
+
+# Plot insertions!
+options(fig.width = 15, fig.height = 15, repr.plot.width = 15, repr.plot.height = 15)
+par(bg = "white")
+
+CairoPDF("figures/main/fig4a.circos.pdf",  width = 10, height = 10)
+
+circos.clear()
+
+circos.par(start.degree=90)
+
+circos.genomicInitialize(
+  genome, 
+  plotType = c("axis"),
+  major.by = 250000,
+  axis.labels.cex = 0.5,
+  sector.names = NULL,
+  labels.cex = 1
+)
+
+#circos.genomicDensity(bed_list, track.height = 0.05, col="grey", window.size = 2e4)
+
+circos.genomicTrack(
+  bed_list,
+  stack=TRUE,
+  track.height = 0.7,
+  bg.border = NA,
+  panel.fun = function(region, value, ...) {
+    i = getI(...)
+    circos.genomicRect(region, value, col = colori[i], border = colori[i], ...)
+  }
+)
+
+draw(lgd, x = unit(10, "mm"), y = unit(20, "mm"), just = c("left", "bottom"))
+
+dev.off()
+
+```
+
+## Distance effect
+```{r}
+library(ggplot2)
+
+bin_sizes = c(50000, 100000, 200000, 500000)
+chrom_length = 4435783
+
+# Use positions from 5' matrix
+matrix_metadata_five <- subset(matrix_metadata, side==5)
+positions <- na.omit(matrix_metadata_five$ref_position)
+
+dist_from_ori = c()
+
+for (pos in positions){
+  dist = dist_to_oriC(pos)
+  dist_from_ori = c(dist_from_ori, dist)
+}
+
+
+bin_size = 100000
+n_breaks = as.integer(chrom_length/bin_size, 0)
+bins <- hist(dist_from_ori, breaks=n_breaks, plot = F)
+
+bins_df <- data.frame(
+  'mids' = bins$mids,
+  'counts' = bins$counts,
+  'density' = bins$density
+)
+
+cor.test(bins_df$mids, bins_df$counts, method = 'pearson')
+
+
+# Plot histogram and density curve with two y axes
+df <- data.frame(dists = dist_from_ori / 1000)
+
+# parameters
+bins <- 50
+n <- nrow(df)
+bw <- (max(df$dists) - min(df$dists)) / bins  # explicit bin width
+
+fig4a <- ggplot(df, aes(x = dists)) +
+
+  # histogram in counts (use explicit binwidth for precise scaling)
+  geom_histogram(binwidth = bw, fill = "lightgray", color = NA) +
+
+  # density scaled to count-scale using after_stat()
+  geom_density(aes(y = after_stat(density * n * bw)),linewidth = 1) +
+
+  # left axis = counts; right axis = true density (inverse transform)
+  #scale_y_continuous(
+  #  name = "Count",
+  #  sec.axis = sec_axis(~ . / (n * bw), name = "Density")
+  #) +
+  ylab("Count") +
+
+  labs(x = "Distance from oriC (kb)") +
+  theme_bw(base_family = "CMU Sans Serif")
+
+fig4a
+
+```
+
+# Not used
+
+## Burden analysis 
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggrepel)
+library(viridis)
+library(cowplot)
+
+burden_is6110 <- read.csv('workflow/results/gwas/burden_is6110.tsv', sep='\t')
+burden_is6110 <- burden_is6110[,-c(8,9 )]
+burden_is6110$typus <- rep('is6110', nrow(burden_is6110)) 
+burden_is6110$index <- 1:nrow(burden_is6110)
+head(burden_is6110)
+
+
+load_permutation_res <- function(permutation_results){
+  # Load permutation results
+  permut <- data.frame()
+  for (f in permutation_results){
+    df <- read.csv(f, sep='\t')
+    df <- df[,-c(8,9,10,11)]
+    bn <- basename(f)
+    rep <- strsplit(bn, '\\.')%>% unlist()
+    n=rep[2]
+    df$n <- rep(n, nrow(df))
+    permut <- rbind(permut, df)
+  }
+  permut$logp <- -log10(permut$lrt.pvalue)
+  return(permut)
+}
+
+permutations_is6110 <- load_permutation_res(list.files('workflow/results/gwas/permutations', pattern="is6110*", full.names = T))
+
+
+
+# Get threshold from permutations: 0.1, 1 and 5 percentiles
+threshoolds_is6110 <-  quantile(permutations_is6110$lrt.pvalue, probs=c(0.001, 0.01, 0.05))
+burden_is6110$logp <- -log10(burden_is6110$lrt.pvalue)
+
+# Add alternative gene names
+
+
+
+
+# Manhatten plot
+a_r3 <- ggplot(burden_is6110, aes(x=index, y=logp)) + 
+  geom_point() + theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=8)) +
+  geom_hline(aes(yintercept=-log10(threshoolds_is6110[[1]])), col='red', linetype='dashed') +
+  geom_label_repel(data=subset(burden_is6110, logp>-log10(threshoolds_is6110[[1]])), aes(label=variant), label.size=0, size = 3)
+
+      #geom_boxplot(data=permut, aes(x=variant, y=logp), outlier.shape = NA, size=0.1)+
+
+# Volcano plot
+b_r3 <- ggplot(burden_is6110, aes(y=logp, x=beta, col=100*variant_h2)) + geom_point(alpha=1) +
+  geom_hline(aes(yintercept=-log10(threshoolds_is6110[[1]])), col='red', linetype='dashed') +
+  theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('Effect size (beta)') +
+  scale_color_viridis(option='turbo', name='Var. expl.') +
+  theme(
+    legend.position = c(1, 1),              # Bottom right inside the plot
+    legend.justification = c("right", "top"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(0.5, "cm"),          # Smaller legend key
+    legend.key.width = unit(0.5, "cm"),
+    legend.text = element_text(size = 8),         # Smaller text
+    legend.title = element_text(size = 8)
+  ) +
+    geom_label_repel(data=subset(burden_is6110, logp>-log10(threshoolds_is6110[[1]])), aes(label=variant), label.size=0, size = 3)
+
+fig_gwas_r3 <- plot_grid(
+  a_r3,b_r3, 
+  labels = c('A', 'B'), 
+  rel_widths = c(1.5,1),
+  label_fontfamily='CMU Sans Serif')
+
+fig_gwas_r3
+```
+
+## Test phylogenetic nesting of uFS
+Nested uFS indicate single insertion events that where split into multiple because if mutations occurring in the flanking sequence after the insertion!
+
+-> Identify breakpoint-drif candidates and merge them!
+
+```{r}
+test_phylo_nesting <- function(siteA, siteB, ins_mat, tree) {
+  
+  SA <- rownames(ins_mat)[ins_mat[, siteA] == 1]
+  SB <- rownames(ins_mat)[ins_mat[, siteB] == 1]
+  
+  # skip trivial cases
+  if (length(SA) < 2 || length(SB) < 2)
+    return(NULL)
+  
+  # co-occurrence
+  cooccur <- length(intersect(SA, SB))
+  
+  # MRCA nodes
+  mrcaA <- getMRCA(tree, SA)
+  mrcaB <- getMRCA(tree, SB)
+  
+  if (is.null(mrcaA) || is.null(mrcaB))
+    return(NULL)
+  
+  # tips descending from each MRCA
+  cladeA <- get_descendant_tips(tree, mrcaA)
+  cladeB <- get_descendant_tips(tree, mrcaB)
+  
+  # nesting tests
+  B_within_A <- all(SB %in% cladeA)
+  A_within_B <- all(SA %in% cladeB)
+  
+  nested <- (B_within_A || A_within_B)
+  
+  data.frame(
+    siteA = siteA,
+    siteB = siteB,
+    nA = length(SA),
+    nB = length(SB),
+    cooccurring = cooccur,
+    nested = nested,
+    B_within_A = B_within_A,
+    A_within_B = A_within_B
+  )
+}
+```
+
+## Adaptive parallelism index
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+library(magrittr)
+
+load(paths$rdata)
+
+# Plot: nr of independent insertions vs. median size of clusters with a specific insertion!
+head(hotspots)
+
+regions = unique(hotspots$region)
+
+hotspots_summary <- data.frame(
+  region = regions,
+  nsites = rep(0, length(regions)),
+  nbirths = rep(0, length(regions)),
+  ndeaths = rep(0, length(regions)),
+  strains_min = rep(0, length(regions)),
+  strains_max = rep(0, length(regions)),
+  strains_mean = rep(0, length(regions)), 
+  strains_total = rep(0, length(regions))
+)
+
+
+
+for (i in 1:length(regions)){
+  r = regions[i]
+  hotspots_sub = subset(hotspots, region == r)
+  hotspots_summary$nsites[i] = nrow(hotspots_sub)
+  hotspots_summary$nbirths[i] = sum(hotspots_sub$births)
+  hotspots_summary$ndeaths[i] = sum(hotspots_sub$deaths)
+  hotspots_summary$strains_min[i] = min(hotspots_sub$nstrains)
+  hotspots_summary$strains_max[i] = max(hotspots_sub$nstrains)
+  hotspots_summary$strains_mean[i] = mean(hotspots_sub$nstrains)
+  hotspots_summary$strains_total[i] = sum(hotspots_sub$nstrains)
+}
+
+
+# Adaptive parallelism index API
+hotspots_summary$API = hotspots_summary$nsites * log10(hotspots_summary$strains_mean + 1)
+ggplot(hotspots_summary, aes(API)) + geom_density()
+
+```
+
+
+## Compare the 2 hotspot summaries
+Mostly as expected, when summarized by region, fewer birth events are inferred. Few exceptions, especially two intergenic regions with way more births:
+  - mtbc0_003539;mtbc0_003540
+  - mtbc0_000845;mtbc0_000846
+
+```{r}
+library(ggrepel)
+
+head(hotspots_summary)
+head(hotspot_summary2)
+
+hotspot_summary_merged = merge(hotspots_summary, hotspot_summary2, by='region')
+
+head(hotspot_summary_merged)
+
+
+ggplot(hotspot_summary_merged, aes(nbirths.x, nbirths.y)) + 
+  geom_point() +
+  geom_abline(intercept = 0, slope=1) +
+  geom_label_repel(
+    data=subset(
+      hotspot_summary_merged, 
+      nbirths.x>100 | nbirths.y>100), 
+    aes(label=region), 
+    label.size=0, 
+    size = 3)
+
+```
+

@@ -1,0 +1,23 @@
+input:
+  gnumbers: /scicore/home/gagneux/stritt0001/TB/projects/MTBC_IS6110-poly/metadata/WitBet.dataset.gnumbers.tsv
+  reference: ../data/MTBC0_v1.1.fasta
+  assemblies: config/datasets/30assemblies.tsv
+  path_to_db: /scicore/home/gagneux/GROUP/tbresearch/genomes/IN_PROGRESS/common_mappings/PipelineTB/v2
+  #db_format: scicore  # sqlite database as alternative starting point
+
+outdir: results/georgia  # No slash at the end
+
+detettore:
+  is_target: 'software/detettore6110/resources/is_targets/IS6110.fasta'
+  is_cluster: IS3_168
+
+phylogeny:
+  outgroup: G742339
+
+benchmarking:
+  min_id: 0.9
+  anchor_length: 300
+  readlengths: [100, 150]
+  coverages: [20, 30, 40, 50]
+  hit_lengths: [20,40]
+  min_cluster_size: [3, 5]

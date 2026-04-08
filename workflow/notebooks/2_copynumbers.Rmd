@@ -1,0 +1,446 @@
+---
+title: "IS6110 copy numbers"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+# Snakemake I/O
+```{r}
+paths <- tryCatch(
+  {
+    list(
+      rdata = snakemake@input$rdata,
+      output_html     = snakemake@output[[1]]
+    )
+  },
+  error = function(e){
+    list(
+      rdata           = 'is6110.RData',
+      output_html     = NULL  # or whatever default makes sense
+    )
+  }
+)
+
+load(paths$rdata)
+```
+
+
+# Characterize uFS matrices
+Number of identified uFS, site frequency spectrum.
+
+```{r}
+# Sort insertions sites by frequency
+m_counts <- colSums(m) %>% as.data.frame()
+m_counts$ins <- rownames(m_counts)
+names(m_counts)[1] <- 'count'
+m_counts <- m_counts[order(m_counts$count, decreasing = T),]
+
+ggplot(m_counts, aes(count)) + geom_histogram() + scale_x_log10() +
+  theme_bw() + xlab("Number of strains with insertion site") + ylab("Count")
+
+```
+
+
+# Part 2: Variation in IS6110 copy numbers
+Fig. 2. a) Phylogeny of the 10,000 selected strains, estimated with ... The colors of the
+tips indicated the copy number. Lineage labelling follows the 'modern' terminology, 
+as summarized in ..., b) copy number distributions by lineage 
+
+Add lineage and sublineage to copy number table
+```{r}
+# Add lineage to copy_numbers
+copy_numbers$lineage = metadata$lineage[match(copy_numbers$strain, metadata$GNUMBER)]
+copy_numbers$sublineage = metadata$sublineage[match(copy_numbers$strain, metadata$GNUMBER)]
+
+head(copy_numbers)
+
+```
+
+
+# Correlation between 5' and 3' cFS counts
+Given that 5' and 3' flanking sequences are inferred independently, do we find the same number of copies from the two sides?
+```{r}
+library(ggplot2)
+
+head(copy_numbers)
+
+ggplot(copy_numbers, aes(nr_5_anchors, nr_3_anchors)) + 
+  geom_point(alpha=0.2) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
+  xlab("Five prime cFS count") + ylab("Three prime cFS count") +
+  geom_density2d(col='grey80')
+
+r = cor(copy_numbers$nr_5_anchors, copy_numbers$nr_3_anchors)
+print(paste('Correlation between 5 and 3 prime cFS counts: ', r))
+```
+
+
+# Ancestral state reconstruction with copy numbers
+Infer IS6110 copy number ancestral states using maximum parsimony implemented in castor::asr_max_parsimony().
+```{r}
+library(castor)
+library(treeio)
+library(ggtree)
+library(viridis)
+
+head(copy_numbers)
+summary(copy_numbers)
+
+# Reorder matrix rows so they match the tree!
+phyl_order <- match(tree$tip.label, copy_numbers$strain)
+copy_numbers_ordered <- as.integer(copy_numbers[phyl_order,]$CN)
+copy_numbers_ordered <- copy_numbers_ordered + 1
+
+
+# Convert to numeric starting with 1
+site_vec_mapped <- map_to_state_space(copy_numbers_ordered)
+
+plot(density(site_vec_mapped$mapped_states))  
+
+# Reconstruct ancestral states
+asr_result <- asr_max_parsimony(
+  tree, 
+  tip_states = copy_numbers_ordered
+  )
+
+head(asr_result$ancestral_likelihoods)
+summary(asr_result$ancestral_states)
+
+ancestral_states = c()
+for (i in nrow(asr_result$ancestral_likelihoods)){
+  lhs = asr_result$ancestral_likelihoods[i,]
+  max_i = which(lhs==max(lhs))
+  if (length(max_i) > 1){anc_state = NA}
+  else {anc_state = max_i -1 }
+  ancestral_states = c(ancestral_states, anc_state)
+}
+ancestral_states
+
+
+# Plot on tree!
+p <- ggtree(tree, layout='circular',size=0.1, alpha=0.5)  %<+% metadata
+p$data$copy_number <- c(copy_numbers_ordered, asr_result$ancestral_states)
+#p + geom_tree(aes(col=copy_number),size=0.1, alpha=0.5) +  scale_color_viridis(option='turbo')
+
+write.table(p$data, 'workflow/results/phylogeny/treedata.CN_ASR.tsv', sep='\t')
+td <- as.treedata(p)
+write.beast(td, 'workflow/results/phylogeny/snp_alignment.rooted.treefile.annotated') 
+
+
+```
+
+
+# Tree and boxplot
+```{r}
+library(ape)
+library(ggtree)
+library(RColorBrewer)
+library(viridis)
+library(reshape2)
+library(cowplot)
+library(magick)
+library(ggplot2)
+
+# Fig. 2a: tree -----------------------------------------------------------
+
+
+# Color copy number, label lineages
+metadata$cn <- as.numeric(copy_numbers$CN[match(metadata$GNUMBER, copy_numbers$strain)])
+
+t <- ggtree(tree, layout="circular",size=0, alpha=0) %<+% metadata
+# Add CN from ancestral state reconstruction above!
+t$data$copy_number = c(copy_numbers_ordered, asr_result$ancestral_states)
+
+t$data$lineage[which(t$data$lineage %in% c('L9', 'L10', 'Dassie bacillus'))] <- 'L9/L10/Dassie'
+
+fig2a <- t + geom_tree(aes(col=copy_number),size=0.1, alpha=0.8) +
+  #t + geom_tippoint(aes(col=cn), size=0.7, alpha=0.4, stroke=NA) +
+  theme_void(base_family = "CMU Sans Serif", base_line_size = 10) + 
+  theme(
+    legend.position=c(0.88, 0.35), 
+    legend.key.width = unit(2, "mm"),
+    legend.title = element_text(size = 4),
+    legend.text = element_text(size = 4),
+    legend.title.position='bottom',
+    legend.key.size = unit(3, "mm")) +
+  geom_cladelab(
+    data = subset(mrcas, !(lineage %in% c('L9', 'L10', 'Dassie bacillus'))), 
+    mapping=aes(node = node, label = lineage),
+    fontsize = 1.5, barsize=0.1, offset.text=0.0008,color='grey20') +
+  scale_color_viridis(option = 'turbo') +
+  labs(col = "IS6110 copy number")
+
+fig2a
+
+
+# Crop white space
+ggsave("figures/main/fig2a.pdf", fig2a,
+       width = 13, height = 13, units = "cm",
+       device = cairo_pdf)      # full-vector
+
+system("pdfcrop --margins 5 figures/main/fig2a.pdf figures/main/fig2a_crop.pdf")
+
+
+# 2b: copy number distribution ----------------------------------------------
+brewer.pal(3, "Dark2")
+brewer.pal(3, "Set1")
+
+copy_numbers$lineage <- factor(copy_numbers$lineage, levels = lineage_order)
+
+copy_numbers$lineage_new <- as.character(copy_numbers$lineage)
+copy_numbers$lineage_new[which(copy_numbers$lineage=='Dassie bacillus')] <- 'Db'
+copy_numbers$lineage_new <- factor(copy_numbers$lineage_new, levels = c(lineage_order, 'Db'))
+
+
+
+# Replace Dassie bacillus with Db
+#copy_numbers$lineage[which(copy_numbers$lineage=='Dassie bacillus')] <- 'Db'
+
+
+fig2b <- ggplot(copy_numbers, aes(y=CN,x=lineage_new)) + 
+  geom_jitter(alpha=0.3, size=1, color="grey50", stroke=NA) + 
+  geom_boxplot(alpha=0,outlier.shape = NA) +
+  annotate("text",
+           x = 1:length(table(copy_numbers$lineage)),
+           y = 38,
+           label = table(copy_numbers$lineage),
+           col = "grey50", size=2) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  xlab("Lineage") + ylab("IS6110 copy nr.")
+
+fig2b
+
+
+# 2c new: frequency distribution of CN
+fig2c <- ggplot(copy_numbers, aes(CN)) + geom_histogram() +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) + 
+  xlab('Copy number') + ylab('Nr. of strains')
+
+fig2c
+
+
+
+# Combine panels --------------------------------------------------------------
+img_tree <- image_read("figures/main/fig2a_crop.pdf", density = 600)
+p_tree  <- ggdraw() + draw_image(img_tree)
+
+lower_panel <- plot_grid(
+  fig2c, fig2b,nrow = 1,
+  labels=c('B', 'C'),
+  rel_widths = c(1,2),
+  label_size = 10,
+  label_fontfamily='CMU Sans Serif'
+  )
+
+plot_grid(p_tree, lower_panel, 
+          labels = c('A', ''),
+          label_size = 10,
+          ncol=1, 
+          rel_heights=c(3,1),
+          label_fontfamily='CMU Sans Serif')
+
+
+ggsave("figures/main/fig2.tree_copy-numbers.png",
+       width = 15, height = 17, units = "cm",
+       dpi = 300)
+
+```
+
+
+# Zero copies in L2 and L4 strains?
+The L4 strain seems plausible, as the sublineage (L4.2.2) to which it belongs has a mean CN of 2. 
+
+The L2 strain is not plausible, its sublineage (L2.2.1) has a mean CN of 20. In the study where this data was published (https://doi.org/10.1099/mgen.0.001022), there is no indication of read prefiltering, so it is unclear why there would be no IS6110-reads in this strain (SRR20969754). 
+
+```{r}
+copy_numbers[which(copy_numbers$CN==0),]
+
+copy_numbers[which(copy_numbers$CN==0 & copy_numbers$lineage !='L1'),]
+
+```
+
+
+# Sublineage copy numbers 
+```{r}
+library(dplyr)
+
+l='L1'
+cn_subl <- subset(copy_numbers, lineage==l) %>% 
+  group_by(sublineage) %>% 
+  summarise(mean_value = median(CN))
+
+print(cn_subl, n=nrow(cn_subl))
+```
+
+
+# Do generalists have higher CNs?
+Define generalists and specialists as in Stucki et al. 2016, Figure 1.
+Not the appropriate data to really test this. Either include more of these sublineage strains or skip.
+
+```{r}
+l4_range <- list(
+  'L4.1.2' = 'generalist',
+  'L4.1.3' = 'specialist',
+  'L4.3' = 'generalist',
+  'L4.5' = 'specialist',
+  'L4.6.1' = 'specialist',
+  'L4.6.2' = 'specialist',
+  'L4.10' = 'generalist'
+)
+
+cn_l4_range = subset(copy_numbers, sublineage %in% names(l4_range))
+table(cn_l4_range$sublineage)
+table(cn_l4_range$CN, cn_l4_range$sublineage)
+```
+
+
+Plot CN in lineage 4 sublineages!
+```{r}
+l4_cn <- subset(out$metadata, LINEAGE_x=='L4')
+
+ggplot(l4_cn,aes(y=cn,x=SUBLINEAGE_x)) + 
+  geom_jitter(alpha=0.3, size=1, color="#377EB8", stroke=NA) + 
+  geom_boxplot(alpha=0,outlier.shape = NA) +
+  annotate("text",
+           x = 1:length(table(l4_cn$SUBLINEAGE_x)),
+           y = 38,
+           label = table(l4_cn$SUBLINEAGE_x),
+           col = "grey50", size=2) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  xlab("Sublineage") + ylab("IS6110 copy number")
+```
+
+
+## Table 1: lineagae summary
+- add diversity (calculated from tree, e.g. recycle pyseer similiarity matrix)
+```{r}
+library(gt)
+library(magrittr)
+library(tidyverse)
+library(ape)
+library(ggplot2)
+
+table1 <- copy_numbers %>%
+  group_by(lineage) %>%
+  summarise(
+    n = n(),
+    mean = mean(CN),
+    min = min(CN),
+    max = max(CN),
+    var = var(CN),
+    sd = sd(CN)
+  )
+
+table1
+
+
+# Add number of insertion events
+table1$nr_events <- rep(0, nrow(table1))
+table1$nr_insertions <- rep(0, nrow(table1))
+
+for (i in 1:nrow(table1)){
+  
+  lineage = table1$lineage[i] %>% as.character()
+    
+  gnrs = metadata$GNUMBER[metadata$lineage == lineage]
+  m_lineage = matrices$`5`[which(rownames(matrices$`5`) %in% gnrs),] 
+  dim(m_lineage)
+  
+  # Remove columns with sum == 0
+  if (length(gnrs) > 1){
+    m_lineage <- m_lineage[, colSums(m_lineage) != 0]
+    dim(m_lineage)
+    
+    if (is.null(ncol(m_lineage))){table1$nr_events[i] <- 1}
+    else {table1$nr_events[i] <- ncol(m_lineage)}  
+    table1$nr_insertions[i] <- sum(m_lineage)
+  }
+  
+  else {
+    table1$nr_events[i] <- sum(m_lineage)
+    table1$nr_insertions[i] <- sum(m_lineage)
+  }
+}
+
+
+# Add lineage SNP diversity
+dm <- cophenetic(tree)
+dim(dm)
+dm_smry <- summary(dm[upper.tri(dm)])
+
+gnrs = rownames(dm)
+
+dists_lineages = data.frame()
+
+for (l in lineage_order){
+  gnrs_l = subset(metadata, lineage == l)$GNUMBER
+  dm_li = match(gnrs_l, gnrs)
+  dm_l = dm[dm_li, dm_li]
+  pwd_l = dm_l[upper.tri(dm_l)]
+  df_l = data.frame(
+    dists = pwd_l,
+    lineage = rep(l, length(pwd_l))
+  )
+  dists_lineages = rbind(dists_lineages, df_l)
+}
+
+rm(dm)
+
+ggplot(dists_lineages, aes(x=lineage, y=dists)) + 
+  geom_boxplot(outliers=F) +
+  xlab("") + ylab('Pairwise phylogenetic distance')
+
+median_pwd <- tapply(dists_lineages$dists, dists_lineages$lineage, median)
+table1$diversity <- round(median_pwd[table1$lineage], 5)
+
+
+
+# Arrange table
+table1$nr_events_per_strain <- table1$nr_events/table1$n
+table1 <- table1 %>%  arrange(factor(lineage, levels=lineage_order))
+
+# Write to file
+write.table(as.data.frame(table1), file = "workflow/results/table1.tsv", quote = FALSE, sep = "\t", row.names = F)
+
+#table1 <- table1[-c(14, 15),]
+table1
+table1 <- table1[,c("lineage", 'n', 'diversity', 'nr_events', 'nr_insertions', 'mean',  'sd','min', 'max')]
+
+names(table1) <- c('Lineage', 'Strains', 'Diversity', 'Insertion sites', 'Total insertions', 'Mean', 'SD', 'Min', 'Max')
+
+gt_tbl <- 
+  gt(table1) |>
+  fmt_number(columns= c(Strains, `Insertion sites`, `Total insertions`, Min, Max), decimals=0) |>
+  fmt_number(columns= c(Mean, SD), decimals=1) |>
+  tab_header(
+    title = md("**Table 1**. IS6110 insertions in 10,000 strains")) |>
+  tab_spanner(label = "Copy number",columns = c(Mean, SD, Min, Max)) |>
+  tab_options(table_body.hlines.style = "none") |>
+  opt_table_font(font='CMU Sans Serif', stack = "transitional")  |>
+  opt_align_table_header("left") |>
+  tab_footnote(
+    footnote = "Diversity is calculated as the median pairwise phylogenetic distance within lineages.",
+    locations = cells_column_labels(columns = "Diversity")) |>
+  tab_footnote(
+    footnote = md("This clade comprises *M. microti* and *M. pinnipedii*."),
+    locations = cells_body(
+      rows = table1$Lineage == "LaX",  # Replace "X" with the specific value
+      columns = vars(Lineage)
+    ))
+  
+gt_tbl
+
+gt_tbl_latex <- as_latex(gt_tbl)
+as.character(gt_tbl_latex) %>% cat(file="figures/main/table1.tex")
+
+```

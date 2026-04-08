@@ -1,0 +1,424 @@
+---
+title: "Prologue: parse input data"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+Make all results analysis-ready and store tables in an RData object.
+
+# Snakemake I/O
+```{r}
+paths <- tryCatch(
+  {
+    list(
+      tree             = snakemake@input$tree,
+      metadata         = snakemake@input$metadata,
+      matrix5          = snakemake@input$matrix5,
+      matrix3          = snakemake@input$matrix3,
+      matrix_metadata  = snakemake@input$matrix_md,
+      refins           = snakemake@input$refins,
+      anchormap        = snakemake@input$anchormap,
+      copy_numbers     = snakemake@input$copy_numbers,
+
+      output_html      = snakemake@output$html,
+      output_rdata     = snakemake@output$rdata
+    )
+  },
+  error = function(e){
+    list(
+      tree             = 'workflow/results/phylogeny/snp_alignment.rooted.treefile',
+      metadata         = 'metadata/10k/metadata_reduced.tsv',
+      matrix5          = 'workflow/results/detettore/ALL_presence-absence.5prime.tsv',
+      matrix3          = 'workflow/results/detettore/ALL_presence-absence.3prime.tsv',
+      matrix_metadata  = 'workflow/results/detettore/ALL_presence-absence.metadata.tsv',
+      refins           = 'workflow/results/detettore/ALL_reference_insertions.tsv',
+      anchormap        = 'workflow/results/detettore/anchor_map.tsv',
+      copy_numbers     = 'workflow/results/detettore/ALL_copy_numbers.tsv',
+      output_html      = NULL,
+      output_rdata     = 'workflow/results/is6110.RData'
+    )
+  }
+)
+
+source('workflow/notebooks/utils.R')
+```
+
+
+# Load results
+and save them in an RData file
+```{r}
+library(ape)
+
+# Metadata
+metadata <- read.csv(paths$metadata, sep='\t')
+
+# Tree
+tree <- read.tree(paths$tree)
+
+# Copy numbers
+copy_numbers <- read.csv(paths$copy_numbers, sep='\t')
+
+# Presence/absence matrices
+matrix5 <- read.csv(paths$matrix5, sep='\t')
+rownames(matrix5) <- matrix5[,1]
+matrix5 <- matrix5[,-1]
+print(paste('Number of 5 prime insertion sites: ', ncol(matrix5)))
+
+matrix3 <- read.csv(paths$matrix3, sep='\t')
+rownames(matrix3) <- matrix3[,1]
+matrix3 <- matrix3[,-1]
+print(paste('Number of 3 prime insertion sites: ', ncol(matrix3)))
+
+# Matrix metadata
+matrix_metadata <- read.csv(paths$matrix_metadata, sep='\t')
+
+# Anchor-reference map
+anchor_map <- read.csv(paths$anchormap, sep='\t', header=F)
+
+# Reference insertions
+refins <- read.csv(paths$refins, sep='\t', header=TRUE)
+print(paste('Number of reference insertion sites: ', length(unique(refins$position))))
+
+
+```
+
+
+# Aesthetics
+```{r}
+# Load latex fonts (only has to be done once)
+#library(extrafont)
+#loadfonts()
+# run the following command once
+#font_import()
+
+
+# Set plotting theme (not useful, ggsave onyl renders correct font when specified in the plot itself)
+library(ggplot2)
+plot_theme = theme_bw(base_family = "CMU Sans Serif", base_size=12)
+theme_set(plot_theme)
+
+
+# Color scales, fonts etc. 
+library(ggplot2)
+
+mtb_col_scale = c(
+  "L1" = "#ff00ff", 
+  "L2" = "#0000ff", 
+  "L3" = "#a000cc", 
+  "L4" = "#ff0000", 
+  "L5" = "#663200", 
+  "L6" = "#00cc33", 
+  "L7" = "#ede72e", 
+  "L8" ="#FF7F00" ,
+  "L9" = "#006400",
+  "L10" = "black",
+  "La1"="#fbf390", 
+  "La2"="#c1f9dd",
+  "La3"="#dfe1f3",
+  "La4"="#f7cfe7"
+)
+
+mtb_col_scale_animals_black <- c(
+  "A1"="#fbf390", 
+  "A2"="#c1f9dd", 
+  "A3"="#dfe1f3", 
+  "A4"="#f7cfe7", 
+  "L1" = "#ff00ff", 
+  "L2" = "#0000ff", 
+  "L3" = "#a000cc", 
+  "L4" = "#ff0000", 
+  "L5" = "#663200", 
+  "L6" = "#00cc33", 
+  "L7" = "#ede72e", 
+  "L8" ="#FF7F00" ,
+  "L9" = "#006400",
+  "L10" = "black",
+  "La1"="black",
+  "La2" ="black",
+  "La3"="black",
+  "La4"="black"
+)
+  
+
+lineage_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3', 'LaX', 'Dassie bacillus')
+
+```
+
+
+# Load and augment gene map 
+that matches MTBC0 gene names to H37Rv gene names
+```{r}
+
+augment_genemap <- function(genemap, dejesus_path, resistance_path){
+  
+  # Add DeJesus essentiality
+  dejesus <- read.csv(dejesus_path, sep= '\t')
+  genemap$essentiality <- as.factor(dejesus$Final.Call[match(genemap$h37rv_id, dejesus$ORF.ID)])
+  
+  # Distance to oriC
+  genemap$dist_ori <- sapply(genemap$h37rv_start, dist_to_oriC)
+  
+  
+  # Add resistance association
+  resist = read.delim(resistance_path, sep='\t')
+  
+  resistance_genes = c()
+  for (locus in resist$variant){
+    gene = strsplit(locus, '_') %>% unlist()
+    resistance_genes = c(resistance_genes, gene[1])
+  }
+  resistance_genes = unique(resistance_genes)
+  resistance_genes
+  
+  genemap$resistance = rep('no', nrow(genemap))
+  genemap$resistance[which(genemap$gene_id %in% resistance_genes | genemap$h37rv_id %in% resistance_genes)] <- 'yes'  
+  
+  return(genemap)
+}
+
+
+# Add information to gene metadata: essentiality, distance to origin, resistance
+genemap = read.delim("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
+
+# Remove cds- prefix from MTBCO gene ID
+genemap$mtbc0_gene_id <- gsub('cds-', '', genemap$mtbc0_gene_id)
+
+# Add essentiality and resistance information
+genemap = augment_genemap(
+  genemap,
+  'manuscript/literatura/DeJesus2017/orfs.csv',
+  'data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt'
+)
+
+head(genemap)
+
+```
+
+
+# Add blast hits to matrix metadata
+```{r}
+matrix_metadata <- add_blast_info(matrix_metadata)
+```
+
+
+# Add alternative lineage names
+```{r}
+# Change names of lineages C and D
+metadata$lineage = metadata$LINEAGE_x
+metadata$sublineage = metadata$SUBLINEAGE_x
+metadata$lineage[which(metadata$lineage=='C')] <- 'LaX'
+metadata$lineage[which(metadata$lineage=='D')] <- 'Dassie bacillus'
+
+```
+
+
+# Parse reference insertions
+- add unique positional ID position_strand
+- flag insertions where the proportion of reads NOT supporting the insertion is higher than 0.1
+- add Rv names if there is an H37Rv ortholog
+- add context category 'genic/intergenic'
+```{r}
+# Add lineage and sublineage
+refins$lineage = metadata$lineage[match(refins$strain,metadata$GNUMBER)]
+refins$sublineage = metadata$sublineage[match(refins$strain,metadata$GNUMBER)]
+
+# Nr of unique insertion sites: some sites with same position, different strand!
+refins$unique_id <- paste(refins$position, refins$strand, sep='-')
+
+# Reference support vs. 5' support + 3' support
+refsupp_threshold = 0.1
+refins$support_ref_ratio = refins$support_ref / (refins$support_5+refins$support_3)
+refins$filter <- rep('PASS', nrow(refins))
+refins$filter[which(refins$support_ref_ratio > refsupp_threshold)] <- 'FAILED'
+
+ggplot(subset(refins, support_ref_ratio > 0), aes(support_ref_ratio)) + geom_density() + theme_bw() + scale_x_log10() + geom_vline(aes(xintercept = refsupp_threshold), col='red', linetype ='dashed')
+
+# Add Rv gene names
+refins$rv_ortholog <- add_alternative_gene_names(refins$gene, genemap)
+
+# Add genic/intergenic 
+refins$context <- rep('genic', nrow(refins))
+refins$context[grepl(';', refins$gene)] <- 'intergenic'
+refins$context <- as.factor(refins$context)
+
+```
+
+
+# Rescale branch lengths to account for non-variable positions
+Information from https://github.com/cstritt/large_variable_alignment/
+```{r}
+genome_size = 4411532  
+excluded_positions = 673325
+var_positions = 548052 # from workflow/results/phylogeny/snp_alignment.uniqueseq.phy
+
+scaling_factor <- (genome_size - excluded_positions)/ var_positions
+tree$edge.length = tree$edge.length * scaling_factor
+
+```
+
+
+# Get MRCA of lineages
+```{r}
+library(ape)
+library(reshape2)
+# Check monophyly and get mrca
+mrcas <- list()
+nomono <- list()
+
+for (l in lineage_order){
+  md_l <- subset(metadata, lineage==l)
+  gnrs <- md_l$GNUMBER[which(md_l$GNUMBER %in% tree$tip.label)]
+  
+  is_mono <- is.monophyletic(tree, gnrs)
+  mrca_node <- getMRCA(tree, gnrs)
+  
+  if (is_mono){
+    mrcas[[l]] <- mrca_node
+  }
+  else {
+    print(paste("Not monophyletic: ", l))
+    all_descendants <- extract.clade(tree, mrca_node)$tip.label
+    subtree <- keep.tip(tree, all_descendants)
+    nomono[[l]] <- subtree
+  }
+}
+mrcas
+mrcas = as.data.frame(mrcas) %>% melt()
+names(mrcas) <- c("lineage", "node")
+mrcas
+
+
+# Lineages 8, 10, and D are missing as they have a single sample
+table(metadata$lineage)
+subset(metadata, lineage == 'L8')
+subset(metadata, lineage == 'L9')
+subset(metadata, lineage == 'L10')
+subset(metadata, lineage == 'Dassie bacillus')
+
+# Use L9  mrca to label L9, 10 and Dassie bacillus, which are too close anyway but not monophyletic
+singles <- data.frame(
+  'lineage' = c('L8', 'L10', 'Dassie bacillus', 'L9/L10/Dassie'),
+  'node' = c(
+    which(tree$tip.label=='G26689'), 
+    which(tree$tip.label=='G50409'),
+    which(tree$tip.label=='G01494'),
+    18206)
+)
+
+mrcas <- rbind(mrcas, singles)
+mrcas
+
+```
+
+# Summarize hotspots
+```{r}
+site_summary <- read.csv('workflow/results/detettore/AS_5prime.site_summary.tsv', sep='\t')
+site_summary$site_id <- gsub("X", "", site_summary$site_id)
+
+hotspots <- data.frame()
+refins_absent = data.frame()  # to further investigate: why are some refins not mapped to the matrix?
+
+
+# Only consider 5' reads
+for (i in 1:nrow(refins)){
+
+  if (i%%1000 == 0){print(i)}
+
+  row = refins[i,]
+  region = row$gene
+  
+  # GEt the corresponding uFS for a reference insertion
+  if (row$strand == '+'){ua = subset(anchor_map, V1==row$strain & V2==row$anchor_5)$V3}
+  else {ua = subset(anchor_map, V1==row$strain & V2==row$anchor_3)$V3}
+
+  if (length(ua) == 0){
+    refins_absent = rbind(refins_absent, row)
+    next 
+    }  
+
+  if (ua %in% hotspots$site_id){next}
+
+  ua_asr = subset(site_summary, site_id == ua)
+  ua_meta = subset(matrix_metadata, site_id == ua)
+  
+  dfrow = data.frame(
+    'region' = region,
+    'site_id' = ua,
+    'position' = ua_meta$ref_position,
+    'births' = ua_asr$births,
+    'deaths' = ua_asr$deaths,
+    'nstrains' = ua_meta$nr_strains,
+    'blasthit' = ifelse(is.null(ua_meta$blasthit), NA, ua_meta$blasthit),
+    'rv_homolog' = row$rv_ortholog,
+    'cluster' = ua_meta$cluster
+  )
+  hotspots = rbind(hotspots, dfrow)
+}
+
+```
+
+# Clean up Rdata and save image
+```{r}
+rm(singles, row, md_l, ua_asr, ua_meta)
+rm(site_summary)
+rm(dfrow)
+rm(paths)
+save.image('is6110.RData')
+```
+
+
+# Fake tree and matrix for Figure 1
+```{r}
+library(ape)
+library(phytools)
+library(ggtree)
+library(ggplot2)
+
+
+# 1. Simulate a random phylogenetic tree with 20 samples
+set.seed(123)  # for reproducibility
+n_taxa <- 50
+tree <- rtree(n_taxa)
+
+# Plot the tree
+plot(tree, main = "Simulated Phylogenetic Tree")
+tree <- root(tree, 't1')
+
+# Simulate 10 traits evolving on the tree
+Q <- matrix(c(-0.1, 0.1,
+              0.1, -0.1), 
+            nrow = 2, byrow = TRUE)
+
+rownames(Q) <- colnames(Q) <- c("0", "1")
+
+n_traits <- 40
+trait_matrix <- matrix(NA, nrow = n_taxa, ncol = n_traits)
+
+for (i in 1:n_traits) {
+  trait <- sim.Mk(tree, Q = Q, anc = "0")
+  trait_matrix[, i] <- as.numeric(trait)
+}
+rownames(trait_matrix) <- tree$tip.label
+colnames(trait_matrix) <- paste0("Trait_", 1:n_traits)
+
+trait_matrix <- apply(trait_matrix, c(1, 2), as.character)
+
+# Plot
+p <- ggtree(tree)
+
+pm <- gheatmap(p, trait_matrix, colnames = FALSE) +  
+  scale_fill_manual(values=c('2'='black', '1'='white')) +
+  theme(legend.position = "none") +
+  scale_x_reverse()
+
+pm
+
+```

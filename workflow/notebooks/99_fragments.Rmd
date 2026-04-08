@@ -1,0 +1,52 @@
+# Prelude: Strand bias issue
+There seems to be a potential strand bias issue: when inferring births/deaths through ancestral state reconstruction, there is an imbalance of deaths inferred from the 5' and 3' matrices: 4008/3584 deaths. Does this arrise from false negatives in the 5' or false positives in the 3' matrix? 
+
+- compare distribution of 5' and 3' support
+- ratio of 5' vs 3' support per strain
+
+```{r}
+anchors <- read.csv('workflow/results/detettore/ALL_anchors.tsv', sep='\t')
+head(anchors)
+
+sb = data.frame()
+
+for (s in unique(anchors$strain)){
+
+  anchors_strain = subset(anchors, strain == s)
+
+  x = by(anchors_strain$num_reads, anchors_strain$side, median)
+
+  five = ifelse('5' %in% names(x), x[['5']], NA)
+  three = ifelse('3' %in% names(x), x[['3']], NA)
+  
+  row = data.frame(
+    strain = s,
+    median_reads_five = five,
+    median_reads_three = three
+  )
+  sb = rbind(sb,row)
+}
+
+sb$diff = sb$median_reads_five-sb$median_reads_three
+
+
+ggplot(sb, aes(diff)) + geom_histogram()
+summary(sb$diff)
+
+
+ggplot(sb, aes(median_reads_five, median_reads_three)) + 
+  geom_point() + 
+  geom_smooth() + geom_abline(slope=1, intercept=0, col='red')
+
+wilcox.test(sb$median_reads_five, sb$median_reads_three, paired = TRUE, alternative = "two.sided")
+
+```
+
+## GC bias?
+Is there a GC difference in the 5' and 3' context? -> Parallels with motif analysis
+```{r}
+
+
+```
+
+Issue further explored in the birth/death section, where per branch birth/death events are inferred. 

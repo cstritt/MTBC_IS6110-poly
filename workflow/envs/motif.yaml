@@ -1,0 +1,10 @@
+name: motif
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - python>=3.9
+  - biopython>=1.79
+  - pandas>=1.5
+  - meme>=5.5

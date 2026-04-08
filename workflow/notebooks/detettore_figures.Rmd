@@ -1,0 +1,3574 @@
+---
+title: "detettore figures"
+output: html_document
+date: "2025-04-14"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Prologue
+```{r}
+source('workflow/notebooks/utils.R')
+
+# Load results
+if (!exists('matrices', envir = .GlobalEnv)){
+  out <- load_results()
+  tree = out$tree
+  metadata = out$metadata
+  matrices = list('5' = out$matrix5, '3' = out$matrix3)
+  matrix_metadata = out$matrix_meta
+  refins = out$reference_insertions
+  anchor_map = out$anchor_map
+  copy_numbers = out$copy_numbers
+  rm(out)
+  save.image()
+}
+
+# Set plotting theme (not useful, ggsave onyl renders correct font when specified in the plot itself)
+library(ggplot2)
+plot_theme = theme_bw(base_family = "CMU Sans Serif", base_size=12)
+theme_set(plot_theme)
+
+
+# Load color schemes and define lineage order
+schemata <- load_color_schemes()
+lineage_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3', 'LaX', 'Dassie bacillus')
+
+
+# Change names of lineages C and D
+metadata$lineage = metadata$LINEAGE_x
+metadata$sublineage = metadata$SUBLINEAGE_x
+metadata$lineage[which(metadata$lineage=='C')] <- 'LaX'
+metadata$lineage[which(metadata$lineage=='D')] <- 'Dassie bacillus'
+
+
+# Add lineage to copy_numbers
+copy_numbers$lineage = metadata$lineage[match(copy_numbers$strain, metadata$GNUMBER)]
+copy_numbers$sublineage = metadata$sublineage[match(copy_numbers$strain, metadata$GNUMBER)]
+
+
+# Add information to gene metadata: essentiality, distance to origin, resistance
+genemap = read.delim("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
+genemap = augment_genemap(
+  genemap,
+  'manuscript/literatura/DeJesus2017/orfs.csv',
+  'data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt'
+)
+
+# Add blast info to matrix_metadata
+matrix_metadata <- add_blast_info(matrix_metadata)
+
+save.image('is6110.RData')
+
+```
+
+## Parse reference insertions
+- add unique positional ID position_strand
+- flag insertions where the proportion of reads NOT supporting the insertion is higher than 0.1
+- add Rv names if there is an H37Rv ortholog
+- add context category 'genic/intergenic'
+```{r}
+# Add lineage and sublineage
+refins$lineage = metadata$lineage[match(refins$strain,metadata$GNUMBER)]
+refins$sublineage = metadata$sublineage[match(refins$strain,metadata$GNUMBER)]
+
+# Nr of unique insertion sites: some sites with same position, different strand!
+refins$unique_id <- paste(refins$position, refins$strand, sep='-')
+
+# Reference support vs. 5' support + 3' support
+refsupp_threshold = 0.1
+refins$support_ref_ratio = refins$support_ref / (refins$support_5+refins$support_3)
+refins$filter <- rep('PASS', nrow(refins))
+refins$filter[which(refins$support_ref_ratio > refsupp_threshold)] <- 'FAILED'
+
+ggplot(subset(refins, support_ref_ratio > 0), aes(support_ref_ratio)) + geom_density() + theme_bw() + scale_x_log10() + geom_vline(aes(xintercept = refsupp_threshold), col='red', linetype ='dashed')
+
+# Add Rv gene names
+refins$rv_ortholog <- add_alternative_gene_names(refins$gene, genemap)
+
+# Add genic/intergenic 
+refins$context <- rep('genic', nrow(refins))
+refins$context[grepl(';', refins$gene)] <- 'intergenic'
+refins$context <- as.factor(refins$context)
+
+save.image('is6110.RData')
+```
+
+## Rescale branch lengths to account for non-variable positions
+Information from https://github.com/cstritt/large_variable_alignment/
+```{r}
+genome_size = 4411532  
+excluded_positions = 673325
+var_positions = 548052 # from workflow/results/phylogeny/snp_alignment.uniqueseq.phy
+
+scaling_factor <- (genome_size - excluded_positions)/ var_positions
+tree$edge.length = tree$edge.length * scaling_factor
+
+save.image('is6110.RData')
+```
+
+## Get MRCA of lineages
+```{r}
+library(ape)
+library(reshape2)
+# Check monophyly and get mrca
+mrcas <- list()
+nomono <- list()
+
+for (l in lineage_order){
+  md_l <- subset(metadata, lineage==l)
+  gnrs <- md_l$GNUMBER[which(md_l$GNUMBER %in% tree$tip.label)]
+  
+  is_mono <- is.monophyletic(tree, gnrs)
+  mrca_node <- getMRCA(tree, gnrs)
+  
+  if (is_mono){
+    mrcas[[l]] <- mrca_node
+  }
+  else {
+    print(paste("Not monophyletic: ", l))
+    all_descendants <- extract.clade(tree, mrca_node)$tip.label
+    subtree <- keep.tip(tree, all_descendants)
+    nomono[[l]] <- subtree
+  }
+}
+mrcas
+mrcas = as.data.frame(mrcas) %>% melt()
+names(mrcas) <- c("lineage", "node")
+mrcas
+
+
+# Lineages 8, 10, and D are missing as they have a single sample
+table(metadata$lineage)
+subset(metadata, lineage == 'L8')
+subset(metadata, lineage == 'L9')
+subset(metadata, lineage == 'L10')
+subset(metadata, lineage == 'Dassie bacillus')
+
+# Use L9  mrca to label L9, 10 and Dassie bacillus, which are too close anyway but not monophyletic
+singles <- data.frame(
+  'lineage' = c('L8', 'L10', 'Dassie bacillus', 'L9/L10/Dassie'),
+  'node' = c(
+    which(tree$tip.label=='G26689'), 
+    which(tree$tip.label=='G50409'),
+    which(tree$tip.label=='G01494'),
+    18206)
+)
+
+mrcas <- rbind(mrcas, singles)
+mrcas
+
+save.image('is6110.RData')
+
+```
+
+## Summarize hotspots
+```{r}
+site_summary <- read.csv('workflow/results/detettore/AS_5prime.site_summary.tsv', sep='\t')
+site_summary$site_id <- gsub("X", "", site_summary$site_id)
+
+hotspots <- data.frame()
+refins_absent = data.frame()  # to further investigate: why are some refins not mapped to the matrix?
+
+
+# Only consider 5' reads
+for (i in 1:nrow(refins)){
+
+  if (i%%1000 == 0){print(i)}
+
+  row = refins[i,]
+  region = row$gene
+  
+  if (row$strand == '+'){ua = subset(anchor_map, V1==row$strain & V2==row$anchor_5)$V3}
+  else {ua = subset(anchor_map, V1==row$strain & V2==row$anchor_3)$V3}
+
+  if (length(ua) == 0){
+    refins_absent = rbind(refins_absent, row)
+    next 
+    }  
+
+  if (ua %in% hotspots$site_id){next}
+
+  ua_asr = subset(site_summary, site_id == ua)
+  ua_meta = subset(matrix_metadata, site_id == ua)
+  
+  dfrow = data.frame(
+    'region' = region,
+    'site_id' = ua,
+    'position' = ua_meta$ref_position,
+    'births' = ua_asr$births,
+    'deaths' = ua_asr$deaths,
+    'nstrains' = ua_meta$nr_strains,
+    'blasthit' = ua_meta$blasthit,
+    'rv_homolog' = row$rv_ortholog,
+    'cluster' = ua_meta$cluster
+  )
+  hotspots = rbind(hotspots, dfrow)
+}
+
+save.image('is6110.RData')
+```
+
+## Clean up Rdata
+
+```{r}
+rm(singles, row, md_l, ua_asr, ua_meta)
+rm(site_summary)
+rm(dfrow))
+save.image('is6110.RData')
+```
+
+# A: method & benchmarking
+
+## Create fake tree and matrix for method figure
+```{r}
+library(ape)
+library(phytools)
+library(ggtree)
+library(ggplot2)
+
+
+# 1. Simulate a random phylogenetic tree with 20 samples
+set.seed(123)  # for reproducibility
+n_taxa <- 50
+tree <- rtree(n_taxa)
+
+# Plot the tree
+plot(tree, main = "Simulated Phylogenetic Tree")
+tree <- root(tree, 't1')
+
+# Simulate 10 traits evolving on the tree
+Q <- matrix(c(-0.1, 0.1,
+              0.1, -0.1), 
+            nrow = 2, byrow = TRUE)
+
+rownames(Q) <- colnames(Q) <- c("0", "1")
+
+n_traits <- 40
+trait_matrix <- matrix(NA, nrow = n_taxa, ncol = n_traits)
+
+for (i in 1:n_traits) {
+  trait <- sim.Mk(tree, Q = Q, anc = "0")
+  trait_matrix[, i] <- as.numeric(trait)
+}
+rownames(trait_matrix) <- tree$tip.label
+colnames(trait_matrix) <- paste0("Trait_", 1:n_traits)
+
+trait_matrix <- apply(trait_matrix, c(1, 2), as.character)
+
+# Plot
+p <- ggtree(tree)
+
+pm <- gheatmap(p, trait_matrix, colnames = FALSE) +  
+  scale_fill_manual(values=c('2'='black', '1'='white')) +
+  theme(legend.position = "none") +
+  scale_x_reverse()
+
+pm
+
+```
+
+
+
+## Benchmarking: calculate sensitivity and precision
+```{r}
+library(ggplot2)
+library(magrittr)
+library(betareg)
+library(margins)
+library(cowplot)
+library(RColorBrewer)
+library(wesanderson)
+library(viridis)
+
+#input_table <- snakemake@input[[1]]
+#output_html <- snakemake@output[[1]]
+
+input_table <- 'workflow/results/benchmarking/detettore/benchmark_summary.tsv'
+
+bm <- read.table(input_table, sep='\t', header=T)
+
+bm$assembly <- as.factor(bm$assembly)
+bm$coverage <- as.factor(bm$coverage)
+bm$readlength <- as.factor(bm$readlength)
+bm$side <- as.factor(bm$side)
+
+# Recall/sensitivity and precision, false discovery rate
+bm$recall = bm$true_positives / (bm$true_positives + bm$false_negatives)
+bm$precision = bm$true_positives / (bm$true_positives + bm$false_positives)
+bm$fdr = bm$false_positives / (bm$true_positives + bm$false_positives)
+
+# Number of unpaired inverted repeats
+bm$unpaired = bm$unpaired_IRL + bm$unpaired_IRR
+```
+
+
+## Check quality of IS annotation
+Only include assemblies where the IS copy number equals the number of paired IRs. 
+This excludes the 3 assemblies where IS copies are fragmented. I'm not aware of
+biological processes that would lead to the presence of fragmented, active (!) IS 
+in the genome; the other assemblies don't show this pattern; and, finally, the
+three affected assemblies are all from the same source and based on Ion Torrent 
+short reads.
+
+```{r}
+# Copy nr vs. nr of unpaired IRs
+ggplot(bm, aes(copy_number, unpaired)) + geom_point() + theme_bw()
+bm[which(bm$unpaired>0), 1] %>% unique() %>% as.character()
+
+# Copy nr vs. nr of paired IS
+figS1 <- ggplot(bm, aes(copy_number, paired_IRs)) + 
+  geom_point() + theme_bw(base_family = "CMU Sans Serif", base_size=12) +
+  xlab("Number of annotated intact IS6110 copies") + 
+  ylab("Number of paired inverted repeats")
+
+ggsave("figures/supplement/figS1.fragmented_copies.pdf", figS1, width = 12, height = 10, units = "cm", device = cairo_pdf)     
+
+
+# Exclude 3 assemblies
+exclude <- bm[which(bm$paired_IRs != bm$copy_number), 1] %>% unique() %>% as.character()
+exclude
+bm_filt <- subset(bm, !(assembly %in% exclude)) %>% droplevels()
+
+```
+
+## Describe benchmarking data set
+```{r}
+# How many IS copies in total?
+bm_copynr <- bm_filt[!duplicated(bm_filt$assembly), ]
+print(paste('Number of IS6110 elements analyzed for benchmarking: ', sum(bm_copynr$copy_number)))
+
+```
+
+
+## Figure S2: sensitivity and precision
+
+```{r}
+library(ggplot2)
+library(cowplot)
+library(reshape2)
+
+head(bm_filt)
+
+bm_filt_fig <- melt(bm_filt, id.vars=c('coverage', 'side','readlength'), measure.vars=c('precision', 'recall'))
+
+bm_filt_fig$variable = as.character(bm_filt_fig$variable)
+bm_filt_fig$variable[which(bm_filt_fig$variable=='recall')] <- 'Sensitivity'
+bm_filt_fig$variable[which(bm_filt_fig$variable=='precision')] <- 'Precision'
+bm_filt_fig$variable = factor(bm_filt_fig$variable, levels=c('Sensitivity', 'Precision'))
+
+
+bm_filt_fig$readlength = as.character(bm_filt_fig$readlength)
+bm_filt_fig$readlength[which(bm_filt_fig$readlength=='100')] <- '100 bp reads'
+bm_filt_fig$readlength[which(bm_filt_fig$readlength=='150')] <- '150 bp reads'
+bm_filt_fig$readlength = as.factor(bm_filt_fig$readlength)
+
+# Reorder factor levels
+bm_filt_fig$side = factor(bm_filt_fig$side, levels=c('5', '3'))
+str(bm_filt_fig)
+
+
+figS2 <- ggplot(bm_filt_fig, aes(y=value, x=coverage, fill=side)) +
+  geom_boxplot(outlier.size = 0.5) + facet_grid(variable~readlength) +
+  theme_bw(base_family = "CMU Sans Serif", base_size=12) +
+  xlab('Coverage') + ylab('') + labs(fill = "Side")
+
+figS2
+
+ggsave("figures/supplement/figS2.benchmarking.pdf", figS2, width = 15, height = 12, units = "cm",device = cairo_pdf)     
+
+```
+
+
+
+## Sensitivity
+Plot sensitivity against coverage. Show mean recall for all parameter combinations. Fit GLM to see which parameters affect recall.
+```{r}
+# Line plot
+bm_filt %>% 
+  ggplot(aes(y=recall, x=coverage, col=side,group=interaction(assembly,side))) + 
+  geom_point(alpha=0.5) + geom_line(alpha=0.5) + 
+  facet_wrap(~readlength) + 
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Sensitivity') + xlab('Coverage') +
+  scale_color_brewer(palette='Dark2')
+
+# Boxplot
+bm_filt  %>% 
+  ggplot(aes(y=recall, x=coverage, fill=side)) + 
+  geom_boxplot(alpha=0.5) + 
+  facet_wrap(~readlength) +
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Sensitivity') + xlab('Coverage') +
+  scale_fill_brewer(palette='Dark2')
+
+aggregate(recall~coverage+readlength+side, bm_filt, mean)
+
+```
+
+## How many unpaired IRs are there?
+False positives are cause by IS6110-specific IRs that are not part of a full element.
+```{r}
+bm_filt_hq <- subset(bm_filt, coverage==50 & readlength == 150 & side == 3)
+bm_filt_hq
+
+unpaired_IRs <- sum(bm_filt_hq$unpaired_IRL) + sum(bm_filt_hq$unpaired_IRR)
+print(paste('Number of unpaired inverted repeats in the assemblies used for benchmarking: ', unpaired_IRs))
+
+```
+
+
+## What affects sensitivity?
+Use beta regression to model a proportion:
+
+- slightly change 0s and 1s to avoid boundary issues
+- weight by copy number to give less weight to low CN strains
+- coefficients from beta regression are log odds. Exponentiate and get marginal effects for interpretation
+
+Results: coverage of 20 can produce quite some false negatives, leading to very low
+sensitivity in low-CN strains. Otherwise there seem to be single elements in single
+assemblies that are occasionally missed, but overall sensitivity is high!
+
+```{r}
+# adjust 0s and 1s
+bm_filt$recall_adj <- (bm_filt$recall * (nrow(bm_filt) - 1) + 0.5) / nrow(bm_filt)
+
+m_recall_beta <- betareg(recall_adj ~ assembly + coverage + readlength + side, data = bm_filt, weights=bm_filt$copy_number)
+
+summary(m_recall_beta)
+
+# Get odds from log odds ration
+exp(coef(m_recall_beta))
+
+# Marginal effects
+m_recall_beta_margins <- margins(m_recall_beta)
+summary(m_recall_beta_margins)
+
+```
+
+
+## Same for precision
+```{r}
+
+# Line plot
+figS2b <- bm_filt %>% 
+  ggplot(aes(y=precision, x=coverage, col=side,group=interaction(assembly,side))) + 
+  geom_point(alpha=0.5) + geom_line(alpha=0.5) + 
+  facet_wrap(~readlength) + 
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Precision') + xlab('Coverage') +
+  scale_color_brewer(palette='Dark2')
+
+figS2c
+
+# Boxplot
+figS1d <- bm_filt %>% 
+  ggplot(aes(y=precision, x=coverage, fill=side)) + 
+  geom_boxplot(alpha=0.5) + 
+  facet_wrap(~readlength) +
+  theme(text = element_text(size = 12)) +
+  theme_bw() + ylab('Precision') + xlab('Coverage') +
+  scale_fill_brewer(palette='Dark2')
+
+figS2d
+
+aggregate(precision~coverage+readlength+side, t_filt, mean)
+
+
+# Single assemblies affect precision, especially ASM25337
+subset(bm_filt, side =='5' & false_positives > 0) %>% 
+  ggplot(aes(y=as.factor(false_positives), x=copy_number, col=assembly)) +
+  geom_jitter(width=0.05, height = 0.05, alpha=0.8) + xlab('Copy number') + ylab('False positives') +
+  scale_x_continuous(breaks = seq(0, 25, by = 2)) +
+  scale_color_brewer(palette='Set1') +
+  theme_bw()
+
+
+```
+
+
+## What affects precision?
+
+Results: there is a single case of 3 false positives, else max FP is 2. The assembly is the 
+main factor affecting precision, read length and coverage have nothing to do with it. In these
+few assemblies with false positives, the 3' side is for some reason less precise. 
+
+Whether these effects are due to misassembly or IS copies that have diverged from the 
+target IS through some biological process is unclear. These are exceptions, however; mean precision
+is overall high at 97%. 
+
+```{r}
+#adjust 0s and 1s
+t_filt$precision_adj <- (t_filt$precision * (nrow(t_filt) - 1) + 0.5) / nrow(t_filt)
+
+m_precision_beta <- betareg(precision_adj ~ assembly + coverage + readlength + side, data = t_filt, weights=t_filt$copy_number)
+
+summary(m_precision_beta)
+
+# Get odds from log odds ration
+exp(coef(m_precision_beta))
+
+# Marginal effects!
+m_precision_beta_margins <- margins(m_precision_beta)
+summary(m_precision_beta_margins)
+
+```
+
+## Are false positives due to unpaired IRs?
+Only in one assembly (ASM25337). This strain has 2 IS6110 copies and a pair of dispersed IRL and IRR. 
+
+```{r}
+subset(t_filt, side == '5' & (false_positives > 0 | unpaired > 0)) %>% 
+  ggplot(aes(x=false_positives, y=unpaired, col=assembly)) + geom_jitter(width = 0.1, height = 0.1) 
+
+```
+
+
+## Number of supporting reads
+
+- How many supporting reads can we expect at different coverages?
+- How do z-scores behave when there are few observations?
+
+```{r}
+library(ggplot2)
+
+anchors <- read.csv('workflow/results/benchmarking/detettore/ALL_anchors.tsv', sep='\t')
+head(anchors)
+
+# Split sample name
+split_col <- strsplit(anchors$strain, "_", fixed = TRUE)
+split_df <- as.data.frame(do.call(rbind, split_col))
+colnames(split_df) <- c("ASM", "COV", "RL")
+anchors <- cbind(anchors, split_df)
+
+# Plot distributions of supporting reads
+ggplot(anchors, aes(x=COV, y=num_reads, col=RL)) + 
+  geom_boxplot(size=1)  + geom_jitter(alpha=0.1) +
+  theme_bw()
+
+
+# Plot distributions of z-scores
+ggplot(anchors, aes(x=COV, y=mod_z_score,col=RL)) + 
+  geom_violin(size=1)  + geom_jitter(alpha=0.1) +
+  theme_bw()
+
+
+# Classifier to check if num_reads and/or z-score can identify false positives
+library(randomForest)
+model_rf <- randomForest(as.factor(is_false_positive) ~ num_support + z_score, data=df, ntree=500)
+print(model_rf)
+
+```
+
+
+
+
+
+
+# B: Results overview
+
+
+
+
+## Table 1: lineagae summary
+- add diversity (calculated from tree, e.g. recycle pyseer similiarity matrix)
+```{r}
+library(gt)
+library(magrittr)
+library(tidyverse)
+library(ape)
+library(ggplot2)
+
+table1 <- copy_numbers %>%
+  group_by(lineage) %>%
+  summarise(
+    n = n(),
+    mean = mean(CN),
+    min = min(CN),
+    max = max(CN),
+    var = var(CN),
+    sd = sd(CN)
+  )
+
+table1
+
+
+# Add number of insertion events
+table1$nr_events <- rep(0, nrow(table1))
+table1$nr_insertions <- rep(0, nrow(table1))
+
+for (i in 1:nrow(table1)){
+  
+  lineage = table1$lineage[i] %>% as.character()
+    
+  gnrs = metadata$GNUMBER[metadata$lineage == lineage]
+  m_lineage = matrices$`5`[which(rownames(matrices$`5`) %in% gnrs),] 
+  dim(m_lineage)
+  
+  # Remove columns with sum == 0
+  if (length(gnrs) > 1){
+    m_lineage <- m_lineage[, colSums(m_lineage) != 0]
+    dim(m_lineage)
+    
+    if (is.null(ncol(m_lineage))){table1$nr_events[i] <- 1}
+    else {table1$nr_events[i] <- ncol(m_lineage)}  
+    table1$nr_insertions[i] <- sum(m_lineage)
+  }
+  
+  else {
+    table1$nr_events[i] <- sum(m_lineage)
+    table1$nr_insertions[i] <- sum(m_lineage)
+  }
+}
+
+
+# Add lineage SNP diversity
+dm <- cophenetic(tree)
+dim(dm)
+dm_smry <- summary(dm[upper.tri(dm)])
+
+gnrs = rownames(dm)
+
+dists_lineages = data.frame()
+
+for (l in lineage_order){
+  gnrs_l = subset(metadata, lineage == l)$GNUMBER
+  dm_li = match(gnrs_l, gnrs)
+  dm_l = dm[dm_li, dm_li]
+  pwd_l = dm_l[upper.tri(dm_l)]
+  df_l = data.frame(
+    dists = pwd_l,
+    lineage = rep(l, length(pwd_l))
+  )
+  dists_lineages = rbind(dists_lineages, df_l)
+}
+
+rm(dm)
+
+ggplot(dists_lineages, aes(x=lineage, y=dists)) + 
+  geom_boxplot(outliers=F) +
+  xlab("") + ylab('Pairwise phylogenetic distance')
+
+median_pwd <- tapply(dists_lineages$dists, dists_lineages$lineage, median)
+table1$diversity <- round(median_pwd[table1$lineage], 5)
+
+
+
+# Arrange table
+table1$nr_events_per_strain <- table1$nr_events/table1$n
+table1 <- table1 %>%  arrange(factor(lineage, levels=lineage_order))
+
+# Write to file
+write.table(as.data.frame(table1), file = "workflow/results/table1.tsv", quote = FALSE, sep = "\t", row.names = F)
+
+#table1 <- table1[-c(14, 15),]
+table1
+table1 <- table1[,c("lineage", 'n', 'diversity', 'nr_events', 'nr_insertions', 'mean',  'sd','min', 'max')]
+
+names(table1) <- c('Lineage', 'Strains', 'Diversity', 'Insertion sites', 'Total insertions', 'Mean', 'SD', 'Min', 'Max')
+
+gt_tbl <- 
+  gt(table1) |>
+  fmt_number(columns= c(Strains, `Insertion sites`, `Total insertions`, Min, Max), decimals=0) |>
+  fmt_number(columns= c(Mean, SD), decimals=1) |>
+  tab_header(
+    title = md("**Table 1**. IS6110 insertions in 10,000 strains")) |>
+  tab_spanner(label = "Copy number",columns = c(Mean, SD, Min, Max)) |>
+  tab_options(table_body.hlines.style = "none") |>
+  opt_table_font(font='CMU Sans Serif', stack = "transitional")  |>
+  opt_align_table_header("left") |>
+  tab_footnote(
+    footnote = "Diversity is calculated as the median pairwise phylogenetic distance within lineages.",
+    locations = cells_column_labels(columns = "Diversity")) |>
+  tab_footnote(
+    footnote = md("This clade comprises *M. microti* and *M. pinnipedii*."),
+    locations = cells_body(
+      rows = table1$Lineage == "LaX",  # Replace "X" with the specific value
+      columns = vars(Lineage)
+    ))
+  
+gt_tbl
+
+gt_tbl_latex <- as_latex(gt_tbl)
+as.character(gt_tbl_latex) %>% cat(file="figures/main/table1.tex")
+
+```
+
+## Compare 5' and 3' matrices
+
+```{r}
+
+```
+
+
+
+
+
+
+
+# C: copy numbers
+
+Fig. 2. a) Phylogeny of the 10,000 selected strains, estimated with ... The colors of the
+tips indicated the copy number. Lineage labelling follows the 'modern' terminology, 
+as summarized in ..., b) copy number distributions by lineage 
+
+## Ancestral state reconstruction with copy numbers!
+```{r}
+library(castor)
+library(treeio)
+library(ggtree)
+library(viridis)
+
+head(copy_numbers)
+summary(copy_numbers)
+
+# Reorder matrix rows so they match the tree!
+phyl_order <- match(tree$tip.label, copy_numbers$strain)
+copy_numbers_ordered <- as.integer(copy_numbers[phyl_order,]$CN)
+copy_numbers_ordered <- copy_numbers_ordered + 1
+
+
+# Convert to numeric starting with 1
+site_vec_mapped <- map_to_state_space(copy_numbers_ordered)
+
+plot(density(site_vec_mapped$mapped_states))  
+
+# Reconstruct ancestral states
+asr_result <- asr_max_parsimony(
+  tree, 
+  tip_states = copy_numbers_ordered
+  )
+
+head(asr_result$ancestral_likelihoods)
+summary(asr_result$ancestral_states)
+
+ancestral_states = c()
+for (i in nrow(asr_result$ancestral_likelihoods)){
+  lhs = asr_result$ancestral_likelihoods[i,]
+  max_i = which(lhs==max(lhs))
+  if (length(max_i) > 1){anc_state = NA}
+  else {anc_state = max_i -1 }
+  ancestral_states = c(ancestral_states, anc_state)
+}
+ancestral_states
+
+
+# Plot on tree!
+p <- ggtree(tree, layout='circular',size=0.1, alpha=0.5)  %<+% metadata
+p$data$copy_number <- c(copy_numbers_ordered, asr_result$ancestral_states)
+#p + geom_tree(aes(col=copy_number),size=0.1, alpha=0.5) +  scale_color_viridis(option='turbo')
+
+write.table(p$data, 'workflow/results/phylogeny/treedata.CN_ASR.tsv', sep='\t')
+
+td <- as.treedata(p)
+write.beast(td, 'workflow/results/phylogeny/snp_alignment.rooted.treefile.annotated') 
+
+
+```
+
+
+## Tree and boxplot
+```{r}
+library(ape)
+library(ggtree)
+library(RColorBrewer)
+library(viridis)
+library(reshape2)
+library(cowplot)
+library(magick)
+library(ggplot2)
+
+# Fig. 2a: tree -----------------------------------------------------------
+
+
+# Color copy number, label lineages
+metadata$cn <- as.numeric(copy_numbers$CN[match(metadata$GNUMBER, copy_numbers$strain)])
+
+t <- ggtree(tree, layout="circular",size=0, alpha=0) %<+% metadata
+# Add CN from ancestral state reconstruction above!
+t$data$copy_number = c(copy_numbers_ordered, asr_result$ancestral_states)
+
+t$data$lineage[which(t$data$lineage %in% c('L9', 'L10', 'Dassie bacillus'))] <- 'L9/L10/Dassie'
+
+fig2a <- t + geom_tree(aes(col=copy_number),size=0.1, alpha=0.8) +
+  #t + geom_tippoint(aes(col=cn), size=0.7, alpha=0.4, stroke=NA) +
+  theme_void(base_family = "CMU Sans Serif", base_line_size = 10) + 
+  theme(
+    legend.position=c(0.88, 0.35), 
+    legend.key.width = unit(2, "mm"),
+    legend.title = element_text(size = 4),
+    legend.text = element_text(size = 4),
+    legend.title.position='bottom',
+    legend.key.size = unit(3, "mm")) +
+  geom_cladelab(
+    data = subset(mrcas, !(lineage %in% c('L9', 'L10', 'Dassie bacillus'))), 
+    mapping=aes(node = node, label = lineage),
+    fontsize = 1.5, barsize=0.1, offset.text=0.0008,color='grey20') +
+  scale_color_viridis(option = 'turbo') +
+  labs(col = "IS6110 copy number")
+
+fig2a
+
+
+# Crop white space
+ggsave("figures/main/fig2a.pdf", fig2a,
+       width = 13, height = 13, units = "cm",
+       device = cairo_pdf)      # full-vector
+
+system("pdfcrop --margins 5 figures/main/fig2a.pdf figures/main/fig2a_crop.pdf")
+
+
+
+
+
+# 2b: copy number distribution ----------------------------------------------
+brewer.pal(3, "Dark2")
+brewer.pal(3, "Set1")
+
+copy_numbers$lineage <- factor(copy_numbers$lineage, levels = lineage_order)
+
+copy_numbers$lineage_new <- as.character(copy_numbers$lineage)
+copy_numbers$lineage_new[which(copy_numbers$lineage=='Dassie bacillus')] <- 'Db'
+copy_numbers$lineage_new <- factor(copy_numbers$lineage_new, levels = c(lineage_order, 'Db'))
+
+
+
+# Replace Dassie bacillus with Db
+#copy_numbers$lineage[which(copy_numbers$lineage=='Dassie bacillus')] <- 'Db'
+
+
+fig2b <- ggplot(copy_numbers, aes(y=CN,x=lineage_new)) + 
+  geom_jitter(alpha=0.3, size=1, color="grey50", stroke=NA) + 
+  geom_boxplot(alpha=0,outlier.shape = NA) +
+  annotate("text",
+           x = 1:length(table(copy_numbers$lineage)),
+           y = 38,
+           label = table(copy_numbers$lineage),
+           col = "grey50", size=2) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  xlab("Lineage") + ylab("IS6110 copy nr.")
+
+fig2b
+
+
+# 2c new: frequency distribution of CN
+fig2c <- ggplot(copy_numbers, aes(CN)) + geom_histogram() +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) + 
+  xlab('Copy number') + ylab('Nr. of strains')
+
+fig2c
+
+
+
+# Combine panels --------------------------------------------------------------
+img_tree <- image_read("figures/main/fig2a_crop.pdf", density = 600)
+p_tree  <- ggdraw() + draw_image(img_tree)
+
+lower_panel <- plot_grid(
+  fig2c, fig2b,nrow = 1,
+  labels=c('B', 'C'),
+  rel_widths = c(1,2),
+  label_size = 10,
+  label_fontfamily='CMU Sans Serif'
+  )
+
+plot_grid(p_tree, lower_panel, 
+          labels = c('A', ''),
+          label_size = 10,
+          ncol=1, 
+          rel_heights=c(3,1),
+          label_fontfamily='CMU Sans Serif')
+
+
+ggsave("figures/main/fig2.tree_copy-numbers.pdf",
+       width = 15, height = 17, units = "cm",
+       device = cairo_pdf)      # full-vector
+
+```
+
+
+## Sublineage copy numbers 
+```{r}
+library(dplyr)
+
+l='L1'
+cn_subl <- subset(copy_numbers, lineage==l) %>% 
+  group_by(sublineage) %>% 
+  summarise(mean_value = mean(CN))
+
+print(cn_subl, n=nrow(cn_subl))
+```
+
+
+## Do generalists have higher CNs?
+Plot CN in lineage 4 sublineages!
+```{r}
+l4_cn <- subset(out$metadata, LINEAGE_x=='L4')
+
+ggplot(l4_cn,aes(y=cn,x=SUBLINEAGE_x)) + 
+  geom_jitter(alpha=0.3, size=1, color="#377EB8", stroke=NA) + 
+  geom_boxplot(alpha=0,outlier.shape = NA) +
+  annotate("text",
+           x = 1:length(table(l4_cn$SUBLINEAGE_x)),
+           y = 38,
+           label = table(l4_cn$SUBLINEAGE_x),
+           col = "grey50", size=2) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  xlab("Sublineage") + ylab("IS6110 copy number")
+```
+
+
+## Burden analysis 
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggrepel)
+library(viridis)
+library(cowplot)
+
+burden_snps_indels <- read.csv('workflow/results/gwas/burden_snps_indels.tsv', sep='\t')
+burden_snps_indels <- burden_snps_indels[,-c(8,9 )]
+burden_snps_indels$typus <- rep('snps_indels', nrow(burden_snps_indels)) 
+burden_snps_indels$index <- 1:nrow(burden_snps_indels)
+head(burden_snps_indels)
+
+burden_is6110 <- read.csv('workflow/results/gwas/burden_is6110.tsv', sep='\t')
+burden_is6110 <- burden_is6110[,-c(8,9 )]
+burden_is6110$typus <- rep('is6110', nrow(burden_is6110)) 
+burden_is6110$index <- 1:nrow(burden_is6110)
+head(burden_is6110)
+
+
+load_permutation_res <- function(permutation_results){
+  # Load permutation results
+  permut <- data.frame()
+  for (f in permutation_results){
+    df <- read.csv(f, sep='\t')
+    df <- df[,-c(8,9,10,11)]
+    bn <- basename(f)
+    rep <- strsplit(bn, '\\.')%>% unlist()
+    n=rep[2]
+    df$n <- rep(n, nrow(df))
+    permut <- rbind(permut, df)
+  }
+  permut$logp <- -log10(permut$lrt.pvalue)
+  return(permut)
+}
+
+permutations_snps_indels <- load_permutation_res(list.files('workflow/results/gwas/permutations', pattern="snps_indels*", full.names = T))
+permutations_is6110 <- load_permutation_res(list.files('workflow/results/gwas/permutations', pattern="is6110*", full.names = T))
+
+
+
+# Get threshold from permutations: 0.1, 1 and 5 percentiles
+threshoolds_snps_indels <-  quantile(permutations_snps_indels$lrt.pvalue, probs=c(0.001, 0.01, 0.05))
+threshoolds_is6110 <-  quantile(permutations_is6110$lrt.pvalue, probs=c(0.001, 0.01, 0.05))
+
+
+burden_comb <- rbind(burden_snps_indels, burden_is6110)
+burden_comb$logp <- -log10(burden_comb$lrt.pvalue)
+
+
+# Manhatten plot
+a_r3 <- ggplot(burden_comb, aes(x=index, y=logp)) + 
+  geom_point() + theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('') +
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size=8)) +
+  facet_wrap(~typus, scales='free_x') +
+  geom_hline(aes(yintercept=-log10(threshoolds_is6110[[1]])), col='red', linetype='dashed')
+
+      #geom_boxplot(data=permut, aes(x=variant, y=logp), outlier.shape = NA, size=0.1)+
+
+# Volcano plot
+b_r3 <- ggplot(burden_comb, aes(y=logp, x=beta, col=100*variant_h2)) + geom_point(alpha=1) +
+  geom_hline(aes(yintercept=-log10(threshoolds_is6110[[1]])), col='red', linetype='dashed') +
+  theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('Effect size (beta)') +
+  scale_color_viridis(option='turbo', name='Var. expl.') +
+  theme(
+    legend.position = c(1, 0),              # Bottom right inside the plot
+    legend.justification = c("right", "bottom"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(0.5, "cm"),          # Smaller legend key
+    legend.key.width = unit(0.5, "cm"),
+    legend.text = element_text(size = 8),         # Smaller text
+    legend.title = element_text(size = 8)
+  )
+
+fig_gwas_r3 <- plot_grid(
+  a_r3,b_r3, 
+  labels = c('A', 'B'), 
+  rel_widths = c(1.5,1),
+  label_fontfamily='CMU Sans Serif')
+
+fig_gwas_r3
+```
+
+
+
+
+
+
+## Burden analysis with all genes
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggrepel)
+library(viridis)
+library(cowplot)
+
+burden <- read.csv('workflow/results/gwas/burden_all_genes.tsv', sep='\t')
+burden <- burden[,-c(8,9 )]
+
+permutation_results_all <- list.files('workflow/results/gwas/permutations', pattern="burden_all*", full.names = T)
+
+# Load permutation results
+permut_all <- data.frame()
+for (f in permutation_results_all){
+  df <- read.csv(f, sep='\t')
+  df <- df[,-c(8,9,10,11)]
+  bn <- basename(f)
+  rep <- strsplit(bn, '\\.')%>% unlist()
+  n=rep[2]
+  df$n <- rep(n, nrow(df))
+  permut_all <- rbind(permut_all, df)
+}
+
+permut_all$logp <- -log10(permut_all$lrt.pvalue)
+
+
+# Get threshold from permutations: 1 and 5 percentiles
+thresholds_burden = quantile(permut_all$lrt.pvalue, probs=c(0.01, 0.05))
+burden$logp <- -log10(burden$lrt.pvalue)
+sign_burden <- -log10(thresholds_burden[[1]])
+
+burden$i <- 1:nrow(burden)
+
+# Manhatten plot
+a_burden <- ggplot(burden, aes(x=i, y=logp)) + 
+  geom_point(alpha=0.3) + theme_bw(base_family = "CMU Sans Serif") +
+  #geom_point(data=subset(burden, variant %in% burden_r3$variant), aes(col='R3 genes')) +
+  geom_hline(aes(yintercept=sign_burden), col='red', linetype='dashed') +
+  scale_color_manual(values = c("R3 genes" = "red"),name=NA) +
+  ylab('-Log10(P)') + xlab('') +
+  theme(
+    legend.position = c(0.95, 0.95),             
+    legend.justification = c("right", "top"),
+    legend.background = element_rect(fill = 'grey89', color = NA),
+    legend.title=element_blank(),
+    legend.key = element_rect(fill = 'grey89', color = NA)
+    )
+
+a_burden
+
+# Volcano plot
+b_burden <- ggplot(burden, aes(y=logp, x=beta, col=100*variant_h2)) + geom_point(alpha=1) +
+  geom_hline(aes(yintercept=sign_burden), col='red', linetype='dashed') +
+  theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('Effect size (beta)') +
+  geom_label_repel(data=subset(burden, logp>sign_burden),aes(label=variant), label.size=0, size = 2,col='black') +
+  scale_color_viridis(option='turbo', name='Var. expl.') +
+  theme(
+    legend.position = c(1, 0),             
+    legend.justification = c("right", "bottom"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(0.5, "cm"), 
+    legend.key.width = unit(0.5, "cm"),
+    legend.text = element_text(size = 8),
+    legend.title = element_text(size = 8)
+  )
+
+fig_gwas_all <- plot_grid(
+  a_burden,b_burden,
+  labels = c('A', 'B'), 
+  rel_widths = c(1.5,1))
+
+fig_gwas_all
+
+ggsave("figures/fig3.gwas_burden_all_genes.pdf",
+       width = 20, height = 10, units = "cm",
+       device = cairo_pdf)      # full-vector
+
+burden <- burden[with(burden, order(-logp)),]
+head(burden)
+
+burden[which(burden$logp > sign_burden & burden$beta > 1), ]$variant
+
+
+
+```
+
+## GWAS with all non-synonymous variants
+```{r}
+gwas_snps <- read.csv('workflow/results/gwas/burden_snps_indels.tsv', sep='\t')
+gwas_snps <- gwas_snps[,-c(8,9)]
+gwas_snps$logp <- -log10(gwas_snps$lrt.pvalue)
+gwas_snps$pos <- as.numeric(gsub(".*_([0-9]+).*", "\\1", gwas_snps$variant))
+
+
+gwas_is6110 <- read.csv('workflow/results/gwas/burden_is6110.tsv', sep='\t')
+gwas_is6110 <- gwas_is6110[,-c(8,9)]
+gwas_is6110$logp <- -log10(gwas_is6110$lrt.pvalue)
+gwas_is6110$pos <- as.numeric(gsub(".*_([0-9]+).*", "\\1", gwas_is6110$variant))
+
+
+
+sign_snps = 0.01
+sign_corr = sign_snps/nrow(gwas_snps)
+sign_corr_logp = -log10(sign_corr)
+
+
+# Load variant metadata
+var_dict = read.csv("data/major_variants.tsv", sep='\t')
+head(var_dict)
+var_dict$pyseer_id = paste(var_dict$chromosome, var_dict$position, var_dict$REF, var_dict$ALT, sep='_')
+gwas_snps$variant %in% var_dict$pyseer_id
+gwas_snps$gene = var_dict$gene[match(gwas_snps$variant, var_dict$pyseer_id)]
+
+gene_split <- strsplit(gwas_snps$gene, '_')
+gwas_snps$gene_rv <- sapply(gene_split, `[`, 2)
+
+
+
+
+# Remove duplicate frequencies
+#gwas_snps <- gwas_snps[!duplicated(gwas_snps$lrt.pvalue), ]
+
+a_snps <- ggplot(gwas_snps, aes(x=pos, y=logp)) + 
+  geom_point(alpha=0.2) +
+  theme_bw(base_family = "CMU Sans Serif") + 
+  ylab('-Log10(P)') + xlab('Position') + 
+  geom_hline(aes(yintercept=sign_corr_logp), col='red', linetype='dashed')
+
+# volcano plot
+b_snps <- ggplot(gwas_snps, aes(y=logp, x=beta, col=100*variant_h2)) + 
+  geom_point(alpha=0.5) +
+  geom_hline(aes(yintercept=sign_corr_logp), col='red', linetype='dashed') +
+  theme_bw(base_family = "CMU Sans Serif") + ylab('-Log10(P)') + xlab('Effect size (beta)') +
+  scale_color_viridis(option='turbo', name='Var. expl.') +
+  theme(
+    legend.position = c(1, 0),              # Bottom right inside the plot
+    legend.justification = c("right", "bottom"),
+    legend.background = element_rect(fill = NA, color = NA),
+    legend.key.height = unit(0.5, "cm"),          # Smaller legend key
+    legend.key.width = unit(0.5, "cm"),
+    legend.text = element_text(size = 8),         # Smaller text
+    legend.title = element_text(size = 8)
+  )
+
+plot_grid(
+  a_snps,b_snps, 
+  labels = c('A', 'B'), 
+  rel_widths = c(1.5,1))
+
+# Check top 10 SNPs
+gwas_snps <- gwas_snps[with(gwas_snps, order(-logp)),]
+head(gwas_snps,10)
+topgenes <- subset(gwas_snps, logp>10)$gene_rv
+
+
+
+
+
+
+# Plot hit on tree
+#library(magrittr)
+#gwas_snps <- read.csv('workflow/results/gwas/all_variants.tsv', sep='\t')
+#x <- hit_on_tree(gwas_snps, out$tree, out$copy_numbers,out$metadata,'MTB_anc_1107917_G_T')
+
+```
+
+
+# D: birth and death
+
+## Frequency distribution
+```{r}
+library(ggplot2)
+library(reshape2)
+library(magrittr)
+
+counts <- colSums(matrices$`5`)
+sfs5 <- data.frame(table(counts))
+
+counts <- colSums(matrices$`3`)
+sfs3 <- data.frame(table(counts))
+
+sfs <- merge(sfs5, sfs3, by = "counts", all.x = TRUE, all.y=TRUE)
+names(sfs) <- c('counts', 'fiveprime' , 'threeprime')
+summary(sfs)
+
+sfs$counts <- as.numeric(sfs$counts)
+
+# Correlation 5' and 3'
+ggplot(sfs, aes(fiveprime, threeprime)) + geom_point() +
+  geom_abline(slope=1, intercept=0) +
+  theme_bw()
+
+
+# SFS plot
+melt(sfs, id.vars = c('counts')) %>% 
+  ggplot(aes(x=counts, y=value)) + geom_bar(stat='identity') +
+  ylab('Number of sites') + xlab('Number of strains')  +
+  theme_minimal() + facet_wrap(~variable)
+
+ggplot(sfs, aes(x=counts, y=threeprime)) + geom_bar(stat='identity') +
+  ylab('Number of sites') + xlab('Number of strains')  +
+  theme_minimal() + scale_y_log10()
+
+```
+
+## IS6110 diversity
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ape)
+library(reshape2)
+library(Matrix)
+
+table1 <- read.csv('workflow/results/table1.tsv', sep='\t')
+table1$IS_diversity <- rep(NA, nrow(table1))
+
+add_snp_dist = FALSE  # OOM!
+subsample_n = 0
+
+is_allele_spec <- function(mat){
+  " Get binned allele frequencies from a matrix
+  "
+  nstrains = nrow(mat)
+  
+  # only consider shared alleles to make patterns more clear
+  #mat <- mat[,colSums(mat) > 1]
+  mat <- as.matrix(mat)
+  nsites = ncol(mat)
+
+  allelecounts <- colSums(mat)
+
+  low =  table(allelecounts <= nstrains*0.25)
+  lowmid = table(nstrains*0.25 < allelecounts & allelecounts <= nstrains*0.5)
+  midhigh = table(nstrains*0.5 < allelecounts & allelecounts <= nstrains*0.75)
+  high = table(nstrains*0.75 < allelecounts & allelecounts <= nstrains)
+
+  prop_out = data.frame(
+    'low' = tryCatch({low[['TRUE']]}, error = function(e){0})/nsites,
+    'lowmid' =  tryCatch({lowmid[['TRUE']]}, error = function(e){0})/nsites,
+    'midhigh' =  tryCatch({midhigh[['TRUE']]}, error = function(e){0})/nsites,
+    'high' =  tryCatch({high[['TRUE']]}, error = function(e){0})/nsites,
+    'nsites' = nsites
+  )
+  return(prop_out)
+}
+
+
+pairwise_diff_raw <- function(mat) {
+  mat <- as.matrix(mat) * 1  # ensure numeric 0/1
+  L <- ncol(mat)
+  
+  # Number of shared 1s between pairs
+  shared_ones <- mat %*% t(mat)
+  
+  # Number of 1s in each strain
+  ones_per_strain <- rowSums(mat)
+  
+  # Using: differences = ones_i + ones_j - 2 * shared_ones
+  diff_mat <- outer(ones_per_strain, ones_per_strain, "+") - 2 * shared_ones
+  
+  return(diff_mat)  # full symmetric matrix of raw differences
+}
+
+to_table_tri <- function(mat, value_name="value") {
+  ij <- which(upper.tri(mat), arr.ind = TRUE)
+  data.frame(
+    sample1 = rownames(mat)[ij[,1]],
+    sample2 = rownames(mat)[ij[,2]],
+    !!value_name := mat[ij]
+  )
+}
+
+to_table <- function(mat, value_name = "value") {
+  rn <- rownames(mat)
+  
+  # Upper triangle WITHOUT diagonal
+  idx <- which(upper.tri(mat), arr.ind = TRUE)
+  
+  data.frame(
+    sample1 = rn[idx[, 1]],
+    sample2 = rn[idx[, 2]],
+    value = mat[idx],
+    row.names = NULL,
+    check.names = FALSE
+  ) |>
+    dplyr::rename(!!value_name := value)
+}
+
+# Optionally add SNP distances (may required subsampling)
+if (add_snp_dist){
+  dm <- cophenetic(tree)
+  gnrs = rownames(dm)
+}
+
+# Create data frame with pairwise IS6110 and SNP distances!
+pairwise_differences <- data.frame()
+shared_allele_proportions <- data.frame()
+
+
+for (l in lineage_order){
+  if (l %in% c('L8', 'L10', 'Dassie bacillus')){next}
+
+  tm_sub <- subset_tree_matrix(tree, matrices$`5`, metadata, l, 'lineage') 
+  mat_sub = tm_sub[[2]]
+  diff_mat = pairwise_diff_raw(mat_sub)
+
+  # Median pairwise IS differences
+  median_pwd = median(diff_mat)
+  table1$IS_diversity[which(table1$Lineage==l)] <- median_pwd
+  print(paste(l, round(median_pwd,4)))
+
+  # Frequency spectrum for shared insertions
+  aspec <- is_allele_spec(mat_sub)
+  aspec$lineage <- l
+  shared_allele_proportions <- rbind(shared_allele_proportions, aspec)
+
+  # Subsample if combining with SNP distances
+  nstrains = length(tm_sub[[1]]$tip.label)
+  if (subsample_n > 0){nsubsample = ifelse(nstrains<subsample_n, nstrains, subsample_n)}
+
+  # Convert to table
+  diff_df <- to_table(diff_mat, 'is6110_distance')
+  if (subsample_n > 0){diff_df <- diff_df[sample(nrow(diff_df), nsubsample), ]}
+
+  # Optionally add SNP distances
+  if (add_snp_dist){
+    # Add phylogenetic distance
+    gnrs_l = unique(diff_df$sample1, diff_df$sample2)
+    dm_li = match(gnrs_l, gnrs)
+    dm_l = dm[dm_li, dm_li]  
+    diff_df_snps <- to_table(dm_l, 'snp_distance')
+    diff_df <- merge(diff_df, diff_df_snps, by = c('sample1', 'sample2'))
+  }
+
+  # Add lineage 
+  diff_df$lineage = rep(l, nrow(diff_df))
+  pairwise_differences <- rbind(pairwise_differences, diff_df)
+}
+
+by(pairwise_differences$is6110_distance, pairwise_differences$lineage, summary)
+
+# Overall differences
+#diff_mat_full = pairwise_diff_raw(matrices$`5`)
+#median(diff_mat_full)
+
+```
+
+
+Figure X. A) Pairwise IS6110 diversity. B) Proportion and count of high frequency insertion sites. 
+
+
+```{r}
+library(ggrepel)
+
+
+a <- ggplot(pairwise_differences, aes(lineage, is6110_distance)) + geom_boxplot(outlier.size=0.5, size=0.3) +
+  theme_bw() + xlab("Lineage") + ylab("IS6110 pairwise differences") 
+
+
+# Allele frequency spectrum
+focal = c('L1', 'L2', 'L3', 'L4','L5', 'L6', 'La1', 'La2', 'La3')
+
+b <- subset(shared_allele_proportions, lineage %in% focal) %>%
+  melt(measure.vars = c('low', 'lowmid', 'midhigh', 'high'), id.vars='lineage') %>%
+  ggplot(aes(x=variable, y=value, fill=lineage)) + geom_histogram(stat='identity', position='dodge') +
+  scale_fill_manual(values=schemata$col_scale) + theme_bw()
+
+
+# Shared proportion vs count
+shared_allele_proportions$high_nsites <- shared_allele_proportions$high * shared_allele_proportions$nsites
+
+c <- ggplot(subset(shared_allele_proportions, lineage %in% focal), aes(high_nsites, high)) + geom_point() +
+  theme_bw() + geom_text_repel(aes(label=lineage), nudge_x = 1, size=2) +
+  xlab("Number of high frequency sites") + ylab("Proportion of high frequency sites")
+
+
+cowplot::plot_grid(a,c, ncol=2, labels=c('A', 'B'), label_fontfamily = 'CMU Sans Serif', rel_widths = c(3,2))
+
+ggsave('figures/main/figX.IS_diversity.pdf', width = 20, height = 8, units = "cm", device = cairo_pdf) 
+
+
+
+
+
+```
+
+
+
+## Birth and death rates
+How does IS6110 activity vary across the MTBC? 
+Do more copies imply more transposition? Or is this impossible to observe due to the effects of strong purifying selection?
+
+Compare the distribution of birth and death rates among lineages! For this, assign lineage to internal nodes using the MRCA information.
+
+```{r}
+library(ggtree)
+library(ggplot2)
+library(dplyr)
+library(viridis)
+library(reshape2)
+library(RColorBrewer)
+
+
+branch_smry <- merge(
+  read.csv('workflow/results/detettore/AS_5prime.branch_summary.tsv', sep='\t'),
+  read.csv('workflow/results/detettore/AS_3prime.branch_summary.tsv', sep='\t'),
+  by =c('parent', 'child')
+)
+
+# Add copy numbers and birth/death rates to tree
+metadata$copy_number <- copy_numbers$CN[match(metadata$GNUMBER, copy_numbers$strain)]
+
+# Assign lineage to internal nodes
+node_lineage = data.frame()
+
+for (i in 1:nrow(mrcas)){
+  row = mrcas[i,]
+  l = row$lineage
+  n = row$node
+
+  desc = get_descendants(tree, node=n)
+  desc_df = data.frame(
+    node = desc,
+    lineage = rep(l, length(desc))
+  )
+  node_lineage = rbind(node_lineage, desc_df)
+}
+
+# Load tree data with CN ancestral states
+treedata = read.csv('workflow/results/phylogeny/treedata.CN_ASR.tsv', sep='\t')
+summary(treedata)
+
+# Add births and deaths
+treedata <- left_join(treedata, branch_smry, by=c("node" = "child"))
+
+treedata$lineage = node_lineage$lineage[match(treedata$node, node_lineage$node)]
+
+names(treedata)[1] <- 'parent'
+
+# Assign node type terminal/internal
+treedata$node_type = rep('internal', nrow(treedata))
+treedata$node_type[which(treedata$isTip)] <- 'terminal'
+treedata$node_type <- as.factor(treedata$node_type)
+
+summary(treedata)
+```
+
+
+Correlation between 5' and 3' estimates
+```{r}
+# Correlation between 5' and 3' estimates
+a <- ggplot(branch_smry, aes(births.x, births.y)) + geom_point() + geom_smooth() + theme_bw() + 
+  xlab('Births inferred from 5-prime') + ylab('Births inferred from 3-prime')
+b <- ggplot(branch_smry, aes(deaths.x, deaths.y)) + geom_point() + geom_smooth() + theme_bw() +
+  xlab('Deaths inferred from 5-prime') + ylab('Deaths inferred from 3-prime')
+
+cowplot::plot_grid(a,b,ncol=2,labels=c('A', 'B'), label_fontfamily = 'CMU Sans Serif')
+
+cor(branch_smry$births.x,branch_smry$births.y)
+cor(branch_smry$deaths.x,branch_smry$deaths.y)
+
+```
+
+Estimate birth and death rates!
+```{r}
+# Remove 0-length branches
+treedata_zero <- subset(treedata, branch.length==0)
+sum(treedata_zero$births.x, na.rm = TRUE)
+
+# Ignore 0-length branches, they only have few births
+treedata_noZero <- subset(treedata, branch.length>0)
+summary(treedata_noZero)
+
+# Get birth and death rates
+treedata_noZero$birthrate_genome = treedata_noZero$births.x/treedata_noZero$branch.length
+treedata_noZero$deathrate_genome = treedata_noZero$deaths.x/treedata_noZero$branch.length
+
+# Divide by genome size to get rate per position
+genome_size = 4435783
+treedata_noZero$birthrate = treedata_noZero$birthrate_genome / genome_size
+treedata_noZero$deathrate = treedata_noZero$deathrate_genome / genome_size
+
+summary(treedata_noZero$birthrate)
+summary(treedata_noZero$deathrate)
+
+```
+
+Basic summary information
+```{r}
+# How many births and deaths in total?
+sum(treedata_noZero$births.x)
+sum(treedata_noZero$births.y)
+sum(treedata_noZero$deaths.x)
+sum(treedata_noZero$deaths.y)
+
+# How many branches with 0 births/deaths
+length(which(treedata$births.x==0 & treedata$isTip)) / nrow(treedata[which(treedata$isTip),])
+length(which(treedata$births.x==0 & !treedata$isTip)) / nrow(treedata[-which(treedata$isTip),])
+
+# Distributions of birth and death rates
+ggplot(treedata_noZero, aes(x=isTip, y=birthrate)) + geom_boxplot()
+
+# Terminal vs. internal branches
+by(treedata_noZero$birthrate, treedata_noZero$isTip, summary)
+
+# OVerall mean birth and death rate
+summary(treedata_noZero)
+
+# Number of births terminal vs. internal branches
+by(treedata_noZero$births.x, treedata_noZero$isTip, sum)
+by(treedata_noZero$births.y, treedata_noZero$isTip, sum)
+by(treedata_noZero$deaths.x, treedata_noZero$isTip, sum)
+by(treedata_noZero$deaths.y, treedata_noZero$isTip, sum)
+
+by(treedata_noZero$birthrate, treedata_noZero$isTip, summary)
+
+```
+
+
+## Model birth and death rates
+
+```{r}
+library(glmmTMB)
+
+head(treedata)
+summary(treedata$birthrate)
+
+
+
+
+
+fit_raw <- glmmTMB(birthrate ~ copy_number + node_type + lineage_mod + (1 | lineage_mod),
+                   data = treedata, family = tweedie(link = "log"))
+
+summary(fit_raw)
+# Interpret: exp(coef) = multiplicative change per +1 copy
+exp(coef(summary(fit_raw))$cond[, "Estimate"])
+
+
+newdata <- expand.grid(
+  copy_number = seq(min(treedata$copy_number), max(treedata$copy_number), length.out = 100),
+  node_type = "internal",      # choose reference or loop over types
+  lineage_mod = levels(treedata$lineage)[1]
+)
+pred <- predict(fit_raw, newdata = newdata, type = "response", se.fit = TRUE)
+newdata$pred <- pred$fit
+newdata$lower <- pred$fit - 1.96 * pred$se.fit
+newdata$upper <- pred$fit + 1.96 * pred$se.fit
+
+ggplot(newdata, aes(x=copy_number, y=pred)) + geom_point() + geom_smooth() +
+  theme_bw() + xlab('Copy number') + ylab('Predicted birth rate') 
+
+ggplot(newdata, aes(x=copy_number, y=pred, ymin=lower, ymax=upper)) + geom_errorbar() + geom_smooth() +
+  theme_bw() + xlab('Copy number') + ylab('Predicted birth rate')
+
+
+
+
+
+
+
+
+
+
+# Tweedie (compound Poisson-gamma) is good for continuous positives with point-mass zeros
+fit_tweedie <- glmmTMB(birthrate ~ copy_number_z + node_type + lineage + (1 | lineage),
+                       data = treedata, family = tweedie(link = "log"))
+
+
+summary(fit_tweedie)
+
+coefs <- summary(fit_tweedie)$coefficients$cond
+
+# exponentiate fixed effects with CIs
+exp_effects <- exp(confint(fit_tweedie, parm = "beta_"))
+exp_effects
+
+
+
+
+
+
+# Extract lineage coefficients (on link scale), get CIs with confint
+coefs <- summary(fit_tweedie)$coefficients$cond
+confint(fit_tweedie, parm = "beta_", level = 0.95)  # may take time
+
+# Marginal predictions per lineage (population-level)
+newdata <- data.frame(copy_number_z = 0, node_type = levels(df$node_type)[1],
+                      lineage = levels(df$lineage))
+preds <- predict(fit_tweedie, newdata = newdata, type = "response", se.fit = TRUE)
+preds
+
+```
+
+
+
+```{r}
+# Full script: brms hurdle-lognormal with lineage fixed, sublineage random
+# Assumptions: you have a data.frame `d` with columns:
+#   rate       : numeric (>= 0)
+#   TEcopies   : numeric
+#   node_type  : factor or character ("terminal"/"internal")
+#   lineage    : factor (fixed effect you want)
+#   sublineage : factor (nested within lineage)  <-- RANDOM effect
+#   node       : optional unique id per node (optional random effect)
+#
+# Required packages
+library(brms)       # install.packages("brms")
+library(cmdstanr)   # optional but recommended; install and set up cmdstan first
+library(dplyr)
+library(tibble)
+library(coda)       # for HPDinterval if desired
+
+# -----------------------
+# 0. Preprocess & checks
+# -----------------------
+# Convert to factors and center/scale numeric predictors
+treedata = read.csv('workflow/results/phylogeny/treedata.CN_ASR.tsv', sep='\t')
+# Ignore 0-length branches, they only have few births
+treedata <- subset(treedata, branch.length>0)
+summary(treedata)
+
+# Split L1 into 4 sublineages
+table(subset(treedata, lineage=='L1')$sublineage)
+treedata$lineage_mod <- treedata$lineage
+treedata$lineage_mod[which(treedata$lineage=='L1')] <- treedata$sublineage[which(treedata$lineage=='L1')]
+
+# Remove lineages with few observations
+table(treedata$lineage_mod)
+remove = which(table(treedata$lineage_mod) < 100)
+treedata <- subset(treedata, !(lineage_mod %in% remove)) %>% droplevels()
+
+# Assign node type
+treedata$node_type <- rep('internal', nrow(treedata))
+treedata$node_type[which(treedata$isTip)] <- 'terminal'
+
+
+# Add birth rate
+genome_size = 4435783
+treedata$birthrate_genome = treedata$births.x/treedata$branch.length
+treedata$deathrate_genome = treedata$deaths.x/treedata$branch.length
+
+treedata$birthrate = treedata$birthrate_genome / genome_size
+treedata$deathrate = treedata$deathrate_genome / genome_size
+# Divide by genome size to get rate per position
+
+
+
+treedata <- treedata %>%
+  mutate(
+    lineage    = as.factor(lineage_mod),
+    node_type  = as.factor(node_type),
+    node       = as.factor(node)
+  )
+
+# scale / center TEcopies for interpretability
+treedata$copy_number_z <- scale(treedata$copy_number)[,1]
+
+
+# -----------------------
+# 1. Model specification
+# -----------------------
+# We'll fit a single bf with separate formulas for the conditional (mu) and the hurdle (hu).
+# lineage is a fixed effect in both parts; sublineage is a random intercept.
+#
+# If you don't want node-level random effect, remove "(1 | node)" lines.
+#
+brms_formula <- bf(
+  birthrate ~ copy_number_z + node_type + lineage_mod + (1 | lineage_mod),
+  hu   ~ copy_number_z + node_type + lineage_mod + (1 | lineage_mod)
+)
+
+# Use hurdle_lognormal family (positive values on log scale; zeros handled by hurdle)
+family_choice <- hurdle_lognormal()
+
+# Priors (weakly informative; adjust if you have prior knowledge)
+priors <- c(
+  prior(normal(0, 2), class = "b"),          # fixed effects
+  prior(student_t(3, 0, 2.5), class = "sd"), # group-level sds
+  prior(student_t(3, 0, 2.5), class = "sigma") # residual for positive lognormal
+)
+
+# brms control: use cmdstanr backend if available
+#options(brms.backend = "cmdstanr")  # set globally; remove if using rstan
+
+# -----------------------
+# 2. Fit the model
+# -----------------------
+fit <- brm(
+  formula = brms_formula,
+  data = treedata,
+  family = family_choice,
+  prior = priors,
+  chains = 2, cores = 4, iter = 500, warmup = 100,
+  control = list(adapt_delta = 0.95, max_treedepth = 15),
+  seed = 2025
+)
+
+# Save fit object
+# saveRDS(fit, "brms_hurdle_lineage_fixed_sublineage_random.rds")
+
+
+
+# -----------------------
+# 3. Basic diagnostics
+# -----------------------
+print(fit)          # summary including Rhat and ESS
+plot(fit)           # traceplots + densities
+pp_check(fit)       # posterior predictive check (default)
+loo_fit <- try(loo(fit), silent = TRUE)  # approximate LOO; may be slow
+if(!inherits(loo_fit, "try-error")) print(loo_fit)
+
+# Check for divergences / warnings
+sampler_stats <- sampler_params(fit)
+# To find divergent transitions (cmdstanr):
+if("divergent__" %in% names(sampler_stats[[1]])) {
+  n_div <- sum(sapply(sampler_stats, function(x) sum(x[,"divergent__"])))
+  message("Total divergent transitions: ", n_div)
+}
+
+# -----------------------
+# 4. Extract lineage effect sizes (posterior)
+# -----------------------
+# Fixed effects: conditional (mu) will have names "b_mu_*", hurdle part has "b_hu_*"
+# Use fixef() for summaries and posterior_samples() for full posterior draws.
+
+fixefs <- fixef(fit)   # matrix: Estimate, Est.Error, Q2.5, Q97.5
+# Rows include:
+#   b_mu_Intercept, b_mu_TEcopies_z, b_mu_node_typeX, b_mu_lineageL3, ...
+#   b_hu_Intercept, b_hu_TEcopies_z, b_hu_node_typeX, b_hu_lineageL3, ...
+print(fixefs)
+
+# Get posterior draws for lineage coefficients:
+post <- posterior_samples(fit)  # data.frame-like of posterior draws
+
+# Identify lineage coefficient names programmatically
+mu_lineage_pars <- grep("^b_mu_lineage", colnames(post), value = TRUE)
+hu_lineage_pars <- grep("^b_hu_lineage", colnames(post), value = TRUE)
+
+# Summarize each lineage effect (median + 95% CI) for both parts
+summarize_pars <- function(pars) {
+  sapply(pars, function(p) {
+    vec <- post[[p]]
+    c(median = median(vec), q2.5 = quantile(vec, .025), q97.5 = quantile(vec, .975))
+  })
+}
+mu_lineage_summary <- t(summarize_pars(mu_lineage_pars))
+hu_lineage_summary <- t(summarize_pars(hu_lineage_pars))
+
+mu_lineage_summary <- as.data.frame(mu_lineage_summary)
+hu_lineage_summary <- as.data.frame(hu_lineage_summary)
+
+mu_lineage_summary$parameter <- rownames(mu_lineage_summary)
+hu_lineage_summary$parameter <- rownames(hu_lineage_summary)
+
+# Clean names: extract lineage labels
+mu_lineage_summary$lineage <- sub("^b_mu_lineage", "", mu_lineage_summary$parameter)
+hu_lineage_summary$lineage <- sub("^b_hu_lineage", "", hu_lineage_summary$parameter)
+
+# Print tables
+cat("Conditional part (log-rate) lineage fixed effects (median and 95% CI):\n")
+print(mu_lineage_summary[, c("lineage", "median", "q2.5", "q97.5")])
+
+cat("\nHurdle part (prob>0, logit-scale) lineage fixed effects (median and 95% CI):\n")
+print(hu_lineage_summary[, c("lineage", "median", "q2.5", "q97.5")])
+
+# To get effect sizes on interpretable scales:
+# - For conditional part: exponentiate median to get multiplicative factor on rate among positives
+mu_lineage_summary$mult_factor <- exp(mu_lineage_summary$median)
+mu_lineage_summary$mult_CI_low  <- exp(mu_lineage_summary$q2.5)
+mu_lineage_summary$mult_CI_high <- exp(mu_lineage_summary$q97.5)
+
+# - For hurdle part (logit/probit depending on link; default for hu is logit), transform to probability:
+# Use inv_logit
+inv_logit <- function(x) 1 / (1 + exp(-x))
+hu_lineage_summary$prob_effect <- inv_logit(hu_lineage_summary$median)
+hu_lineage_summary$prob_CI_low <- inv_logit(hu_lineage_summary$q2.5)
+hu_lineage_summary$prob_CI_high <- inv_logit(hu_lineage_summary$q97.5)
+
+# -----------------------
+# 5. Pairwise contrasts between lineages (example)
+# -----------------------
+# Compute posterior distribution for difference lineage A - lineage B for conditional part
+# Example: compare lineage "L3" minus "L1" (rename to your levels)
+if(length(mu_lineage_pars) >= 2) {
+  lvl <- gsub("^b_mu_lineage", "", mu_lineage_pars)
+  # choose first two for demo:
+  pA <- mu_lineage_pars[1]; pB <- mu_lineage_pars[2]
+  post_diff_mu <- post[[pA]] - post[[pB]]
+  cat(sprintf("\nPosterior median (mu) difference %s - %s: %f\n", lvl[1], lvl[2], median(post_diff_mu)))
+  print(quantile(post_diff_mu, c(.025, .975)))
+}
+
+# -----------------------
+# 6. Marginal expected rates per lineage (interpretable)
+# -----------------------
+# To produce per-lineage expected total rate (P(rate>0) * E[rate | rate>0]) averaged over random effects:
+# Build newdata with mean TEcopies_z and a reference node_type (or iterate over multiple)
+newdata <- tibble(
+  TEcopies_z = mean(d$TEcopies_z, na.rm = TRUE),
+  node_type  = levels(d$node_type)[1],
+  lineage    = levels(d$lineage)
+)
+
+# For marginal population-level (fixed-effect only) predictions: re_formula = NA
+# posterior_epred returns expected value on response scale (i.e., includes zeros)
+epred_pop <- posterior_epred(fit, newdata = newdata, re_formula = NA) # matrix: draws x newdata rows
+
+# Summarize: median and 95% CI per lineage
+epred_med <- apply(epred_pop, 2, median)
+epred_ci  <- apply(epred_pop, 2, quantile, c(.025, .975))
+
+expected_rate_table <- tibble(
+  lineage = newdata$lineage,
+  expected_rate = epred_med,
+  lower = epred_ci[1,],
+  upper = epred_ci[2,]
+)
+print(expected_rate_table)
+
+# If you prefer population+group-level conditional predictions (i.e., include sublineage random effects),
+# supply representative sublineage values in newdata or set re_formula = NULL (but you must then include sublineage column).
+# Example: conditional on each lineage but averaging over sublineages can be approximated by:
+#  - draw many posterior_pred with re_formula = NULL, sampling sublineages at random from observed distribution,
+#    then compute per-lineage averages. (Left as advanced exercise.)
+
+# -----------------------
+# 7. Variance partitioning / ICC for sublineage (continuous part)
+# -----------------------
+# VarCorr gives group-level sd estimates for both parts. For the continuous (mu) part:
+vc <- VarCorr(fit)
+
+# Access sd for sublineage on the conditional (mu) scale
+# Structure: vc$sublineage$sd contains sd for each parameter; check names
+print(vc$sublineage)
+
+# For a simple approximate ICC on log-scale (conditional part):
+sd_sublineage_mu <- as.numeric(vc$sublineage$sd$mu)  # sd of sublineage intercept for mu
+sigma_mu <- as.numeric(vc$residual__sigma)          # residual sd for mu (log scale)
+icc_sublineage <- sd_sublineage_mu^2 / (sd_sublineage_mu^2 + sigma_mu^2)
+cat("\nApprox ICC (sublineage) for conditional log-rate:", icc_sublineage, "\n")
+
+# For hurdle part, variance partitioning is on the latent (logit) scale:
+sd_sublineage_hu <- as.numeric(vc$sublineage$sd$hu)
+# Total latent variance approx = sd_sublineage_hu^2 + (pi^2 / 3)  # for logit link residual variance
+icc_sublineage_hu <- sd_sublineage_hu^2 / (sd_sublineage_hu^2 + (pi^2 / 3))
+cat("Approx ICC (sublineage) for hurdle (latent logit) :", icc_sublineage_hu, "\n")
+
+# -----------------------
+# 8. Posterior predictive checks & plots (suggested)
+# -----------------------
+# Use pp_check to compare observed vs predicted distribution (zeros and positives)
+pp_check(fit, type = "hist")            # overall
+pp_check(fit, type = "stat", stat = "prop_zero") # fraction of zeros
+pp_check(fit, type = "dens_overlay")    # density overlay of positive values
+
+# Plot lineage-level expected rates (table or ggplot)
+library(ggplot2)
+expected_rate_table %>%
+  ggplot(aes(x = reorder(lineage, expected_rate), y = expected_rate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2) +
+  coord_flip() +
+  labs(y = "Expected TE birth rate (median)", x = "Lineage (population-level)")
+
+# -----------------------
+# End of script
+# -----------------------
+
+
+```
+
+
+
+
+## Birth rate vs. copy number
+```{r}
+# Does birth rate depend on copy number?
+y_raw <- treedata$births.x / treedata$branch.length
+y_pos <- y_raw[is.finite(y_raw) & !is.na(y_raw) & (y_raw > 0)]
+log_min <- floor(log10(min(y_pos)))
+log_max <- ceiling(log10(max(y_pos)))
+# major breaks: 10^n
+major_breaks <- 10^(log_min:log_max)
+# minor breaks: 1..9 * 10^n (this gives the conventional minor gridlines)
+minor_breaks <- as.vector(outer(1:9, 10^(log_min:log_max), `*`))
+# keep only minor breaks within the data range
+minor_breaks <- minor_breaks[minor_breaks >= min(y_pos) & minor_breaks <= max(y_pos)]
+  
+x_levels <- levels(as.factor(treedata$copy_number))
+
+treedata_no7 <- subset(treedata, lineage!= 'L7')
+
+ggplot(na.omit(treedata_no7), aes(as.factor(copy_number), births.x/branch.length)) + 
+  geom_boxplot(outlier.size = 0.3) + facet_wrap(~lineage) +
+  theme_minimal() +  xlab("Copy number") + ylab("IS6110 birth rate") + 
+  scale_x_discrete(
+    labels = ifelse(seq_along(x_levels) %% 5 == 1, x_levels, "")) + 
+  scale_y_log10(
+    breaks = major_breaks,
+      minor_breaks = minor_breaks,
+  )
+```
+
+
+## Birth rate vs. lineage
+
+
+## fragmenti
+```{r}
+# Net births vs. branch length
+a <- ggplot(treedata, aes(x=branch.length, y=births.x-deaths.x)) + 
+  geom_point(alpha=0.1) + geom_smooth() +
+  xlab('Branch length') + ylab('IS6110 births - deaths') +
+  theme_bw(base_family = "CMU Sans Serif",base_size = 12)
+
+# Distribution of birth and death rates
+b <- melt(subset(treedata), id.vars=c('node'), measure.vars=c('birthrate', 'deathrate')) %>%
+  ggplot(aes(x=variable, y=value)) + geom_boxplot() + scale_y_log10() +
+  theme_bw(base_family = "CMU Sans Serif",base_size = 12) +
+  xlab("") + ylab("Rate")
+
+
+cowplot::plot_grid(a,b, ncol=2, labels = c('A', 'B'), label_fontfamily='CMU Sans Serif')
+
+
+# Do births and deaths scale with branch length?
+melt(subset(treedata), id.vars=c('node', 'branch.length'), measure.vars=c('births', 'deaths')) %>% ggplot(aes(branch.length, value)) + 
+  geom_point(alpha=0.1) + 
+  facet_wrap(~variable) +
+  xlab('Branch length') + ylab('Births/deaths of IS6110') +
+  theme_bw(base_family = "CMU Sans Serif",base_size = 12)
+
+
+# Plot birth vs death rates
+ggplot(treedata_noZero, aes(deathrate, birthrate)) + 
+  geom_point() + geom_smooth() +
+  theme_bw() 
+
+# Distribution of branch lengths
+ggplot(treedata, aes(branch.length)) + geom_density()
+
+
+
+# Add distance to the root?? -> highest rates in terminal branches
+distance_to_root <- function(tree, nodes) {
+  root_node <- Ntip(tree) + 1
+  sapply(nodes, function(node) {
+    path <- nodepath(tree, root_node, node)
+    sum(tree$edge.length[tree$edge[, 2] %in% path[-1]])
+  })
+}
+
+treedata$dist2root <- distance_to_root(tree, treedata$node)
+p + geom_tree(data=treedata, aes(col=dist2root)) + scale_color_viridis(option='turbo')  # sanity check
+
+# Births vs distance to root
+ggplot(subset(treedata), aes(x=dist2root, y=births.x/branch.length)) + geom_point(alpha=0.2) + geom_smooth()+ theme_bw() + facet_wrap(~lineage)
+
+
+# Compare birth and death rates among lineages!
+treedata$birthrate[which(treedata$birthrate == 0)] <- 1
+treedata$deathrate[which(treedata$deathrate == 0)] <- 1
+
+melt(treedata_noZero, measure.vars = c('birthrate', 'deathrate'),id.vars=c('parent','node', 'lineage')) %>% na.omit() %>%
+  ggplot(aes(lineage, value, fill=variable)) + geom_boxplot() + 
+  theme_bw() + scale_fill_brewer(palette='Dark2')  +
+  xlab('Lineage') + ylab('Rate (log10)') +
+  scale_y_log10()
+
+ggsave('presentations/labmeeting.21-10-2025/figures/rates_per_lineage.pdf', width = 18, height = 10, units = "cm", device = cairo_pdf) 
+
+
+
+
+# How many branches with 0 events?
+table(treedata$births)
+table(treedata$deaths)
+
+
+
+
+# What if we add copy number?
+melt(subset(treedata, births>0 | deaths>0), id.vars=c('node', 'branch.length', 'copy_number'), measure.vars=c('deaths', 'births')) %>% ggplot(aes(branch.length, value)) + 
+  geom_jitter(aes(col=copy_number),alpha=0.1) + geom_smooth() + 
+  facet_wrap(~variable) +
+  xlab('Branch length') + ylab('Births/deaths of IS6110') +
+  theme_bw() 
+
+
+
+ggsave('presentations/labmeeting.21-10-2025/figures/birthdeath_vs_branchlength.pdf', width = 18, height = 8, units = "cm", device = cairo_pdf) 
+
+m0 <- lm(births~branch.length, data=treedata)
+summary(m0)
+
+
+
+
+
+# Mean birth and death rate for simulation
+birthrates  = treedata$birthrate[!is.na(treedata$birthrate) & !is.infinite(treedata$birthrate) & !is.nan(treedata$birthrate)]
+summary(birthrates)
+summary(birthrates[which(birthrates>0)])
+quantile(birthrates[which(birthrates>0)],c(0.1,0.9))
+
+
+deathrates  = treedata$deathrate[!is.na(treedata$deathrate) & !is.infinite(treedata$deathrate) & !is.nan(treedata$deathrate)]
+summary(deathrates)
+summary(deathrates[which(deathrates>0)])
+quantile(deathrates[which(deathrates>0)],c(0.1,0.9))
+
+
+
+# Distribution of birth and death rates, add color legend
+ggplot(treedata, ) + geom_density(aes(birthrate)) + geom_density(aes(deathrate), col='red') + 
+  scale_x_log10() + theme_minimal() + xlab('Rate (events per unit branch length)') + ylab('Density')
+
+# Rate on tree (not really visible...)
+p$data <- treedata
+p + geom_tree(aes(col=birthrate),size=0.5, alpha=0.5) +  
+  scale_color_viridis(option = 'turbo') +
+  labs(col = "IS6110 birth rate")
+```
+
+
+
+
+What information can we get from the complete matrix? 
+
+## 5' vs 3' similarity
+```{r}
+library(vegan)
+
+mat1 = as.matrix(out$matrix5)
+mat2 = as.matrix(out$matrix3)
+
+dim(mat1)
+dim(mat2)
+
+row_jaccard <- function(a, b) {
+  inter <- rowSums(a & b)
+  union <- rowSums(a | b)
+  mean(inter / union, na.rm = TRUE)
+}
+
+# Assume mat1 and mat2 are binary matrices with same rows but different columns
+# We need to align them by collapsing columns into sets
+mat1_sets <- lapply(1:nrow(mat1), function(i) which(mat1[i, ] == 1))
+mat2_sets <- lapply(1:nrow(mat2), function(i) which(mat2[i, ] == 1))
+
+# Compute average row-level Jaccard
+row_jaccard_score <- mean(mapply(function(s1, s2) {
+  inter <- length(intersect(s1, s2))
+  union <- length(union(s1, s2))
+  if (union == 0) return(NA) else inter / union
+}, mat1_sets, mat2_sets), na.rm = TRUE)
+
+row_jaccard_score
+
+```
+
+
+
+
+
+## Site-summaries
+```{r}
+
+library(ggplot2)
+
+sitesmry <- list(
+  five = read.csv("workflow/results/detettore/AS_5prime.site_summary.tsv", sep='\t'),
+  three = read.csv("workflow/results/detettore/AS_3prime.site_summary.tsv", sep='\t')
+)
+
+
+
+ggplot(sitesmry$five, aes(x=births,y=deaths)) + 
+  geom_point(alpha=0.2) + 
+  theme(base_family = "CMU Sans Serif", base_line_size = 10)
+
+
+```
+
+
+
+
+
+
+## Conservation index: between lineages
+```{r}
+library(dplyr)
+
+# --- Example data ---
+set.seed(42)
+n_strains <- 100
+n_sites <- 500
+mat <- matrix(rbinom(n_strains * n_sites, 1, 0.2),
+              nrow = n_strains, ncol = n_sites)
+rownames(mat) <- paste0("strain", 1:n_strains)
+
+# Assign strains to two lineages
+lineageA <- rownames(mat)[1:50]
+lineageB <- rownames(mat)[51:100]
+
+# --- Functions ---
+# Compute conservation index for a subset of strains
+compute_conservation_index <- function(mat, strain_subset) {
+  submat <- mat[strain_subset, , drop = FALSE]
+  freqs <- colSums(submat)
+  p <- freqs / length(strain_subset)
+  p <- pmin(pmax(p, 1e-10), 1 - 1e-10) # avoid log(0)
+  entropies <- -p * log2(p) - (1 - p) * log2(1 - p)
+  mean_entropy <- mean(entropies)
+  CI <- 1 - mean_entropy
+  return(CI)
+}
+
+# Bootstrap test for CI difference
+bootstrap_ci_diff <- function(mat, subset1, subset2, n_boot = 1000) {
+  # Observed difference
+  ci1 <- compute_conservation_index(mat, subset1)
+  ci2 <- compute_conservation_index(mat, subset2)
+  obs_diff <- ci1 - ci2
+  
+  # Bootstrap differences
+  boot_diffs <- replicate(n_boot, {
+    cols <- sample(ncol(mat), replace = TRUE) # resample sites
+    ci1b <- compute_conservation_index(mat[, cols, drop = FALSE], subset1)
+    ci2b <- compute_conservation_index(mat[, cols, drop = FALSE], subset2)
+    ci1b - ci2b
+  })
+  
+  # Two-sided p-value
+  p_val <- mean(abs(boot_diffs) >= abs(obs_diff))
+  
+  list(
+    observed_diff = obs_diff,
+    p_value = p_val,
+    boot_distribution = boot_diffs
+  )
+}
+
+# --- Run bootstrap test ---
+res <- bootstrap_ci_diff(mat, lineageA, lineageB, n_boot = 5000)
+
+cat("Observed CI difference:", res$observed_diff, "\n")
+cat("Bootstrap p-value:", res$p_value, "\n")
+
+# Optional: visualize bootstrap distribution
+hist(res$boot_distribution, breaks = 50, main = "Bootstrap CI Differences",
+     xlab = "CI difference (LineageA - LineageB)")
+abline(v = res$observed_diff, col = "red", lwd = 2)
+
+```
+
+## Conservation index: along the genome!
+```{r}
+library(dplyr)
+
+# --- Example simulated data ---
+set.seed(42)
+n_strains <- 100
+n_sites <- 1000
+# Simulate binary presence-absence
+mat <- matrix(rbinom(n_strains * n_sites, 1, 0.2),
+              nrow = n_strains, ncol = n_sites)
+rownames(mat) <- paste0("strain", 1:n_strains)
+
+# Assign each site a genomic position (sorted)
+positions <- sort(sample(1:5e6, n_sites))  # positions in bp
+
+# Assign two lineages
+lineageA <- rownames(mat)[1:50]
+lineageB <- rownames(mat)[51:100]
+
+# --- Functions ---
+compute_conservation_index <- function(mat, strain_subset) {
+  submat <- mat[strain_subset, , drop = FALSE]
+  freqs <- colSums(submat)
+  p <- freqs / length(strain_subset)
+  p <- pmin(pmax(p, 1e-10), 1 - 1e-10)
+  entropies <- -p * log2(p) - (1 - p) * log2(1 - p)
+  CI <- 1 - mean(entropies)
+  return(CI)
+}
+
+# Sliding window bootstrap CI difference
+sliding_ci_diff <- function(mat, positions, subset1, subset2,
+                            window_size, step_size, n_boot = 500) {
+  stopifnot(length(positions) == ncol(mat))
+  
+  windows <- seq(min(positions), max(positions) - window_size, by = step_size)
+  results <- data.frame(
+    window_start = windows,
+    window_end = windows + window_size,
+    observed_diff = NA_real_,
+    p_value = NA_real_
+  )
+  
+  for (i in seq_along(windows)) {
+    start_pos <- windows[i]
+    end_pos <- start_pos + window_size
+    cols <- which(positions >= start_pos & positions < end_pos)
+    if (length(cols) < 5) next  # skip if too few sites
+    
+    ci1 <- compute_conservation_index(mat[, cols, drop = FALSE], subset1)
+    ci2 <- compute_conservation_index(mat[, cols, drop = FALSE], subset2)
+    obs_diff <- ci1 - ci2
+    
+    # Bootstrap within window
+    boot_diffs <- replicate(n_boot, {
+      boot_cols <- sample(cols, replace = TRUE)
+      ci1b <- compute_conservation_index(mat[, boot_cols, drop = FALSE], subset1)
+      ci2b <- compute_conservation_index(mat[, boot_cols, drop = FALSE], subset2)
+      ci1b - ci2b
+    })
+    p_val <- mean(abs(boot_diffs) >= abs(obs_diff))
+    
+    results$observed_diff[i] <- obs_diff
+    results$p_value[i] <- p_val
+  }
+  
+  return(results)
+}
+
+# --- Run sliding window ---
+window_size <- 50000   # 50 kb windows
+step_size <- 10000     # slide every 10 kb
+res <- sliding_ci_diff(mat, positions, lineageA, lineageB,
+                       window_size, step_size, n_boot = 500)
+
+# --- Plot results ---
+library(ggplot2)
+
+ggplot(res, aes(x = window_start + window_size/2, y = observed_diff)) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_point(aes(color = p_value < 0.05)) +
+  scale_color_manual(values = c("black", "red")) +
+  labs(x = "Genomic position (bp)",
+       y = "CI difference (A - B)",
+       color = "Significant (p < 0.05)",
+       title = "Conservation index differences along genome") +
+  theme_minimal()
+
+```
+
+
+## Ancestral states through time
+
+Loop through tree and 
+
+
+```{r}
+library(ape)
+
+branch_smry <- list(
+  five = read.csv('workflow/results/detettore/AS_5prime.branch_summary.tsv', sep='\t'),
+  three = read.csv('workflow/results/detettore/AS_3prime.branch_summary.tsv', sep='\t')
+)
+
+head(branch_smry$five)
+
+root_node <- rootnode(out$tree)
+sum(out$tree$edge.length[out$tree$edge[, 2] %in% c(, root_node)])
+
+
+
+out$tree$
+is.rooted(out$tree)
+
+
+root_node <- which(!out$tree$edge[, 2] %in% out$tree$edge[, 1])
+
+
+distance <- sum(tree$edge.length[tree$edge[, 2] %in% c("Tip1", mrca)])
+
+
+# Function to traverse the tree and record state changes
+traverse_tree <- function(node, tree, ancestral_states, state_changes) {
+  # Get the state of the current node
+  current_state <- ancestral_states[ancestral_states$node == node, "state"]
+  
+  # If the node has children, traverse them
+  if (length(tree$edge[tree$edge[,1] == node, 2]) > 0) {
+    for (child in tree$edge[tree$edge[,1] == node, 2]) {
+      child_state <- ancestral_states[ancestral_states$node == child, "state"]
+      # Record the state change if it exists
+      if (!is.na(child_state) && current_state != child_state) {
+        state_changes <- rbind(state_changes, data.frame(from = current_state, to = child_state, node = child))
+      }
+      # Recursively traverse the child
+      state_changes <- traverse_tree(child, tree, ancestral_states, state_changes)
+    }
+  }
+  return(state_changes)
+}
+
+# Initialize an empty data frame to record state changes
+state_changes <- data.frame(from = character(), to = character(), node = integer(), stringsAsFactors = FALSE)
+
+# Start traversing from the root (node 1)
+state_changes <- traverse_tree(1, tree, ancestral_states, state_changes)
+```
+
+
+
+- plot state changes through time
+- ancestral reconstruction: number of unique insertion events
+- birth and death rates
+
+```{r}
+library(ape)
+library(phangorn)
+library(castor)
+library(dplyr)
+library(ggplot2)
+library(reshape2)
+library(magrittr)
+library(ggtree)
+library(treeio)
+
+source('workflow/notebooks/utils.R')
+
+
+# Clusters of unique anchors ---------------------------------------
+ggplot(out$matrix_meta, aes(cluster)) + 
+  geom_histogram(stat='count') +
+  theme_bw()
+  
+
+
+# Analyze birth and death rates ------------------------------------
+"
+Reconstruct ancestral states for IS presence/absence. Produce two summaries,
+per branch and per site, and add state transitions to the ggtree object.
+
+"
+
+branch_smry <- list(
+  five = read.csv('workflow/results/10k/detettore/AS_5prime.branch_summary.tsv', sep='\t'),
+  three = read.csv('workflow/results/10k/detettore/AS_3prime.branch_summary.tsv', sep='\t')
+)
+
+site_smry <- list(
+  five = read.csv('workflow/results/10k/detettore/AS_5prime.site_summary.tsv', sep='\t'),
+  three = read.csv('workflow/results/10k/detettore/AS_3prime.site_summary.tsv', sep='\t')
+)
+
+anc_states = list(
+  five = read.csv('workflow/results/10k/detettore/AS_5prime.ancestral_likelihoods.tsv', sep='\t'),
+  three = read.csv('workflow/results/10k/detettore/AS_3prime.ancestral_likelihoods.tsv', sep='\t')
+)
+
+
+# Distribution of births and deaths
+melt(branch_smry, measure.vars=c('births', 'deaths')) %>%
+  ggplot() + 
+  geom_density(aes(value, col=variable), alpha=0.5)+ 
+  theme_bw() + facet_wrap(~L1) + scale_x_log10()
+
+melt(site_smry, measure.vars=c('births', 'deaths')) %>%
+  ggplot() + 
+  geom_density(aes(value, col=variable), alpha=0.5)+ 
+  theme_bw() + facet_wrap(~L1) + scale_x_log10()
+
+
+
+# Create tree containing all the ancestral states?
+p <- ggtree(out$tree, size=0.0001) %<+% out$metadata
+td <- as.treedata(p)
+
+for (i in 2:ncol(anc_states$five)){
+  site_id = names(anc_states$five[i])
+  
+  # skip singletons
+  if (sum(anc_states$five[i])<1000) next
+  
+  td@data[[site_id]] <- anc_states$five[[site_id]][match(td@data$node, anc_states$five$node)]
+}
+
+
+td@data$node_id <- td@data$node
+td@data$node_id[1:10000] <- td@phylo$tip.label[1:10000]
+
+write.table(td@data, file = '~/Desktop/random_explorations/taxonium/md.tsv' ,quote=F, row.names=F, sep='\t')
+write.beast.newick(td, '~/Desktop/random_explorations/taxonium/mtbc.is6110_anc_states.newick') 
+write.beast(td, '~/Desktop/random_explorations/taxonium/mtbc.is6110_anc_states.nex') 
+
+
+
+
+
+# Cut-n-paste ------------------------------
+" Does absence at some sites correlate with presence at others? This
+could indicate cut-and-paste transposition or methodological issues
+
+"
+library(Matrix)
+matrix5 <- Matrix(as.matrix(out$matrix5), sparse = TRUE)
+
+# 2. Compute phi correlations
+phi_matrix <- binary_cor(matrix5)
+
+# 3. Select pairs with strong negative correlation
+neg_pairs <- which(phi_matrix < -0.2, arr.ind = TRUE)
+pos_pairs <- which(phi_matrix > 0.2, arr.ind = TRUE)
+
+# 4. Run Fisher's exact test on selected pairs
+fisher_results <- apply(neg_pairs, 1, function(idx) {
+  fisher.test(table(X[, idx[1]], X[, idx[2]]))
+})
+
+
+
+
+
+
+
+
+# Visualize birth/death on tree
+
+
+# Plot distributions of birth and death rates
+melt(
+  as_branches, 
+  id.vars = c('edge_id', 'lineage'), 
+  measure.vars = c('birth_rate', 'death_rate')) %>%
+  ggplot(aes(y=value, x=lineage, fill=variable)) + 
+  geom_boxplot(position='dodge') + scale_y_log10()
+
+
+
+```
+
+## Sanity check: plot rates on tree
+```{r}
+# Test for sublineage
+metadata_l = subset(out$metadata, LINEAGE_x == 'L6')
+table(metadata_l$SUBLINEAGE_x)
+
+lineage = 'L6.2.2'
+lineage_sub <- subset_tree_matrix(out$tree, out$matrix5,out$metadata, lineage, 'sublineage')
+
+tree_l <- lineage_sub[[1]]
+matrix_l <- lineage_sub[[2]] %>% as.matrix()
+  
+# Ensure order matches tree tips
+matrix_l <- matrix_l[tree_l$tip.label, ]
+
+# Get birth and death rates
+as_l <- is_birth_death(tree_l, matrix_l)
+
+
+
+# Plot
+p <- ggtree(tree_l) %<+% metadata_l
+treedata <- p$data
+treedata <- left_join(treedata, as_l$branch_summary, by=c("node" = "child"))
+p <- p + 
+  geom_nodelab(data=treedata,aes(label=insertions), col='red', nudge_x = 0.00001, nudge_y = 0.00001) + 
+  geom_tiplab(data=treedata,aes(label=insertions), col='red', nudge_x = 0.00001, nudge_y = 0.00001)
+
+gheatmap(p, matrix_l, colnames = FALSE) 
+```
+
+
+# E: chromosomal distribution
+
+Fig X. Macroscale insertion bias. A) Genomic distribution of IS6110 insertion sites. To improve visibility, maximally 500 genomes were included per lineage. The order of the strains is the same as in the phylogeny in Fig. 2, such that vertical bands 
+
+B) Density of insertion sites increases with distance to the origin of replication (oriC). C) Motif analysis. D) Genic versus intergenic insertion sites. 
+
+
+## Circos plot: macroscale insertion bias
+- add positions/density of DeJesus' essential genes
+
+```{r}
+library(ape)
+library(magrittr)
+library(ggplot2)
+library(dplyr)
+library(Cairo)
+library(circlize)
+library(ComplexHeatmap)
+
+col_schemes <- load_color_schemes()
+
+custom_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3')
+
+# Sort according to the phylogenetic tree!
+refins_ordered <- subset(refins, lineage %in% custom_order) %>% mutate(column_name = factor(strain, levels = rev(tree$tip.label))) %>% arrange(column_name)
+
+head(refins_ordered)
+
+
+# Reduce number of strains: Get n per lineage
+n = 500
+strains_reduced = c()
+for (lineage in rev(custom_order)){
+  strains_lineage = unique(refins_ordered$strain[refins_ordered$lineage==lineage])
+  if (length(strains_lineage) == 0){next}
+  if (length(strains_lineage) <= n){strains_reduced = c(strains_reduced, strains_lineage)}
+  else {
+    strains_sample = sample(strains_lineage, n)
+    strains_reduced = c(strains_reduced, strains_sample)
+  }
+}
+length(strains_reduced)
+
+# Create list of bed files, per strain, for circos
+bed_list = list()
+colori = c()
+
+refins_reduced <- subset(refins_ordered, strain %in% strains_reduced)
+head(refins_reduced)
+
+strains_ordered <- unique(refins_reduced$strain)
+
+for (i in 1:length(strains_ordered)){
+  
+  df <- subset(refins_reduced, strain==strains_ordered[i])
+  bed <- data.frame(
+    'chr' = df$chromosome,
+    'start' = df$position,
+    'end' = df$position+1,
+    'lineage' = df$lineage
+  )
+  
+  bed_list[[i]] <- bed
+  
+  # Now the lineage color
+  lineage =df$lineage[1]
+  col = col_schemes$col_scale_black[lineage]
+  colori <- c(colori, col)
+}
+
+length(bed_list)
+length(colori)
+
+genome = data.frame(chr  = "MTBC0", start = 1,end   = 4435783) 
+
+
+# Define color legend
+lineages = names(col_schemes$col_scale_black)
+lineages = lineages[lineages %in% unique(refins$lineage)]
+colorrs = col_schemes$col_scale[lineages]
+
+lgd = Legend(
+  at = lineages, type = "lines", 
+  legend_gp = gpar(col = colorrs, lwd = 2), 
+  title_gp = gpar(fontfamily = "CMU Sans Serif", fontsize = 10),
+  labels_gp = gpar(fontfamily = "CMU Sans Serif", fontsize = 10),
+  title_position = "topleft", 
+  title = "Lineage", break_dist = 2)
+
+
+# Plot insertions!
+options(fig.width = 15, fig.height = 15, repr.plot.width = 15, repr.plot.height = 15)
+par(bg = "white")
+
+CairoPDF("figures/main/fig4a.circos.pdf",  width = 10, height = 10)
+
+circlize_plot(genome, bed_list, colori)
+draw(lgd, x = unit(10, "mm"), y = unit(20, "mm"), just = c("left", "bottom"))
+
+dev.off()
+
+
+```
+
+
+## Genic vs. intergenic
+Overrepresentation in intergenic as evidence for purifying selection. 
+Also, a higher proportion of genic insertions are expected in singleton insertions. 
+
+Still the weird thing that there are many identical positions with different strands...
+
+
+Figure: 
+
+```{r}
+library(ggplot2)
+
+# Create df with unique reference insertions 
+refins_unique = data.frame()
+
+for (ru in unique(refins$unique_id)){
+  refins_sub = subset(refins, unique_id == ru)
+
+  df = data.frame(
+    unique_id = ru,
+    position = refins_sub[1,]$position,
+    gene = refins_sub[1,]$gene,
+    rv_ortholog = refins_sub[1,]$rv_ortholog,
+    context = refins_sub[1,]$context,
+    nstrains = nrow(refins_sub),
+    freqcat = ifelse(nrow(refins_sub) > 1, 'shared', 'singleton')
+  )
+  refins_unique = rbind(refins_unique, df)
+}
+
+
+
+# Are intergenic insertions overrepresented?
+gff_path <- 'data/MTBC0/MTBC0v1.1_PGAP_annot.gff'
+
+genic_observed <- unname(table(refins_unique$context)['genic'])
+intergenic_observed <- unname(table(refins_unique$context)['intergenic'])
+chromosome_length = 4435783
+
+fisher_test(genic_observed, intergenic_observed,chromosome_length, gff_path)
+
+
+# What about singleton vs. shared elements?
+ggplot(refins_unique, aes(context)) + geom_histogram(stat='count') + 
+  facet_wrap(~freqcat) + 
+  xlab("") + ylab("Count") +
+  theme_bw(base_family = "CMU Sans Serif", base_size=14)
+
+
+# Fisher's exact test
+refins_singletons <- subset(refins_unique, freqcat=='singleton')
+refins_shared <- subset(refins_unique, freqcat=='shared')
+
+fisher_test(
+  unname(table(refins_singletons$context)['genic']),
+  unname(table(refins_singletons$context)['intergenic']), 
+  chromosome_length,
+  gff_path
+)
+
+ratio_singletons = unname(table(refins_singletons$context)['intergenic']) /(unname(table(refins_singletons$context)['genic']) + unname(table(refins_singletons$context)['intergenic']))
+
+
+fisher_test(
+  unname(table(refins_shared$context)['genic']),
+  unname(table(refins_shared$context)['intergenic']),
+   chromosome_length,
+  gff_path
+)
+
+ratio_shared = unname(table(refins_shared$context)['intergenic']) / (unname(table(refins_shared$context)['genic']) + unname(table(refins_shared$context)['intergenic']))
+
+```
+
+
+## Distance effect
+```{r}
+library(ggplot2)
+
+bin_sizes = c(50000, 100000, 200000, 500000)
+chrom_length = 4435783
+positions <- unique(refins$position)
+
+dist_from_ori = c()
+
+for (pos in positions){
+  if (pos < chrom_length/2){
+    dist = pos
+  }
+  else {
+    dist = chrom_length-pos
+  }
+  dist_from_ori = c(dist_from_ori, dist)
+}
+
+
+bin_size = 100000
+n_breaks = as.integer(chrom_length/bin_size, 0)
+bins <- hist(dist_from_ori, breaks=n_breaks, plot = F)
+
+bins_df <- data.frame(
+  'mids' = bins$mids,
+  'counts' = bins$counts,
+  'density' = bins$density
+)
+
+cor.test(bins_df$mids, bins_df$counts, method = 'pearson')
+
+
+fig4b <- ggplot(bins_df, aes(mids/1000, counts)) + 
+  geom_point() + geom_smooth() +
+  theme_minimal(base_family = "CMU Sans Serif") +
+  xlab("Distance form oriC (kb)") + ylab("Nr. insertion sites/100k bin")
+
+fig4b  
+
+
+ggplot(data.frame(dists=dist_from_ori), aes(x = dists/1000)) +
+  geom_histogram(aes(y = ..density..), bins = 50, fill = "lightgray", color = NA) +
+  geom_density(color = "red", size = 1) +
+  #geom_rug(sides = "b", alpha = 0.05) +
+  labs(
+    x = "Distance from oriC (kb)",
+    y = "Density"
+  ) +
+  theme_minimal(base_family = "CMU Sans Serif")
+
+fig4b
+
+
+```
+
+Combine panels
+```{r}
+library(cowplot)
+library(magick)
+
+img_circors <- image_read("figures/main/fig4a.circos.pdf", density = 600)
+p_circos  <- ggdraw() + draw_image(img_circors)
+
+plot_grid(p_circos, fig4b, 
+          labels = c('A', 'B'),
+          label_size = 10,
+          nrow=1, 
+          rel_widths = c(2,1), 
+          rel_heights=c(2,1),
+          label_fontfamily='CMU Sans Serif')
+
+```
+
+
+
+## Symmetry analysis
+Is the distribution of IS6110 more symmetrical than expected by chance?
+If yes, this might reflect large-scale structural adaptations in the chromosome
+to mitigate the effects of inversions/deletions (Rocha 2004)
+
+```{r}
+library(ggplot2)
+
+head(refins_unique)
+chrom_length = 4435783
+oriC_start=1349
+
+refins_shared = subset(refins_unique, nstrains > 1)
+positions = refins_shared$position
+weights = refins_shared$nstrains
+
+angles <- angles_from_positions(positions, chrom_length)
+res <- permutation_test_best_axis(angles, weights, m = 36, n_axes = 360, n_perm = 100)
+res
+
+res_noweights <-  permutation_test_best_axis(angles, NA, m = 36, n_axes = 360, n_perm = 100)
+res_noweights
+
+
+# Convert best axis (radians) to bp:
+best_bp <- res$best_axis * chrom_length / (2*pi)
+best_bp
+
+# Symmetry statistic scan
+plot_axis_scan(res, chrom_length)
+
+# Plot observed vs mirrored bin counts
+plot_paired_bins(angles, weights, best_axis = res$best_axis, m = 36)
+
+plot_circular_histogram(angles, weights = NULL, m = 72, res$best_axis, genome_length = chrom_length)
+
+# Compare observed and permutation stats
+perm_df = data.frame(permutations = res$perm_stats)
+ggplot(perm_df, aes(permutations)) + 
+  geom_density() +
+  geom_vline(xintercept=res$best_stat, col='red', linetype='dashed') 
+
+
+
+# What is being permuted?
+# How is rotation permutation? Shouldnt this result just in a different best axis?
+rot <- runif(1, 0, 2*pi)
+angles_rot <- (angles + rot) %% (2*pi)
+angles_df <- data.frame(angles, angles_rot)
+ggplot(angles_df, aes(angles, angles_rot)) + geom_point() 
+
+res_rot <- permutation_test_best_axis(angles_rot, weights, m = 36, n_axes = 360, n_perm = 100)
+res_rot
+
+plot_axis_scan(res_rot, chrom_length)
+plot_paired_bins(angles_rot, weights, best_axis = res_rot$best_axis, m = 36)
+
+```
+
+
+
+
+
+
+
+### distance to oriC
+No clear increase of essential genes near the oriC.
+
+```{r}
+library(ggplot2)
+
+ggplot(genemap, aes(x=essentiality, y=dist_oriC)) + geom_boxplot()
+
+# Model: logistic regression 
+genemap$essential_bin <- ifelse(genemap$essentiality == "ES", 1, 0)
+fit <- glm(essential_bin ~ dist_oriC, data = genemap, family = binomial)
+summary(fit)
+
+kruskal.test(dist_oriC ~ essentiality, data = genemap)
+pairwise.wilcox.test(genemap$dist_oriC, genemap$essentiality, p.adjust.method = "BH")
+
+
+
+# Strand bias
+table(genemap$strand, genemap$essentiality)
+
+ggplot(na.omit(genemap), aes(x=strand, fill=essentiality)) + geom_bar(stat='count')
+
+
+```
+
+
+
+
+
+
+
+
+### Upset plot
+
+Input format: df with genes in first column, other columns lineages and disrupted 0/1
+
+```{r}
+library(UpSetR)
+library(ggplot2)
+library(vegan)
+library(magrittr)
+library(reshape2)
+
+
+
+upset_df = data.frame(
+  genes = ko_genes
+)
+
+# Create input data frame
+knockouts$lineage <- out$metadata$LINEAGE_x[match(knockouts$strain, out$metadata$GNUMBER)]
+
+custom_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3')
+
+for (l in custom_order){
+  knockout_l = subset(knockouts, lineage==l)
+  upset_df[[l]] = ifelse(ko_genes %in% knockout_l$gene, 1, 0)
+}
+
+head(upset_df)
+
+
+
+
+upset(upset_df,nsets=9, text.scale = 1.5, sets.x.label='Nr. k.o. genes')
+
+# Jaccard distances
+upset_m <- as.matrix(upset_df[,-1])
+rownames(upset_m) <- upset_df$genes
+upset_m <- t(upset_m)
+dist_mat <- vegdist(upset_m, method = "jaccard", binary = TRUE)
+
+# Nr. knockouts per lineage
+rowSums(upset_m) 
+```
+
+
+
+
+## Motif analysis
+Create a sequence logo plot for the ~10 bases adjoining all insertions.
+Also try different subsets: e.g. genic vs. intergenic.
+```{r}
+
+library(ggplot2)
+library(Biostrings)
+library(ggseqlogo)
+library(cowplot)
+
+fasta <- list(
+  five = readDNAStringSet("workflow/results/detettore/ALL_presence-absence.5prime.fasta"),
+  three = readDNAStringSet("workflow/results/detettore/ALL_presence-absence.3prime.fasta")
+)
+
+get_logo <- function(seqs, n_bases, where){
+  subseqs = list()
+  for (i in 1:length(seqs)) {
+    seq = seqs[i]
+    if (where == 'end'){
+      end = width(seq)
+      sseq = subseq(seq, start=end-(n_bases-1), end=end)
+    }
+    else if (where == 'start'){
+      sseq = subseq(seq, start=1, end=n_bases)
+    }
+    subseqs = c(subseqs, unname(as.character(sseq)))
+  }
+  subseqs = unlist(subseqs)
+  ggplot() + geom_logo(subseqs, method='prob') + theme_logo()
+
+}
+
+a <- get_logo(fasta$five, 10, 'end')
+b <- get_logo(fasta$three, 10, 'start')
+
+plot_grid(a,b)
+
+```
+
+
+
+
+
+
+
+# Natural mutagenesis experiment
+
+## Gene knockouts
+- add frequency aspect: shared vs. singletons
+```{r}
+source('workflow/notebooks/utils.R')
+
+head(refins)
+
+knockouts = refins[which(!grepl(';', refins$gene)),]
+intergenic = refins[which(grepl(';', refins$gene)),]
+
+print(paste("Nr. of genes with insertions:", length(unique(knockouts$gene))))
+print(paste("Nr. of intergenic regions with insertions:", length(unique(intergenic$gene))))
+
+ko_genes = unique(knockouts$gene)
+ko_intergenic = unique(intergenic$gene)
+
+
+# How many genes/intergenic regions affected?
+context_df = data.frame()
+context_l = list()
+
+for (feature in unique(refins$gene)){
+  
+  feature_df = subset(refins, gene == feature)
+  nr_pos = length(unique(feature_df$position))
+  nr_lineages = length(unique(feature_df$lineage))
+  nr_strains = length(unique(feature_df$strain))
+  #resistance = feature_df$resistance[1]
+  
+  if (grepl(';', feature)){cat = 'intergenic'}
+  else {cat = 'knockout'}
+
+  row = data.frame(feature, nr_pos, nr_lineages, nr_strains, cat)
+  context_df = rbind(context_df, row)
+}
+
+head(context_df)
+dim(context_df)
+
+dim(subset(context_df, cat=='knockout'))
+dim(subset(context_df, cat=='intergenic'))
+
+```
+
+
+## Accumulation analysis
+Given the limited sample size, how many new genes are knocked out when considering new strains? 
+Do this per lineage! And for intergenic regions.
+
+Also: exclude singleton insertions
+
+```{r}
+library(vegan)
+library(ggplot2)
+
+knockout_m = matrix(nrow=length(ko_genes), ncol=length(metadata$GNUMBER))
+rownames(knockout_m) <- ko_genes
+colnames(knockout_m) <- metadata$GNUMBER
+
+for (i in 1:length(metadata$GNUMBER)){
+  s = metadata$GNUMBER[i]
+  knockout_s = subset(knockouts, strain==s)
+  knockout_m[,s] <- ifelse(ko_genes %in% knockout_s$gene, 1, 0)
+}
+
+# Get accumulation data separately for lineages
+acc_df = data.frame()
+
+for (lineage in lineage_order){
+  
+  gnrs = metadata$GNUMBER[which(metadata$LINEAGE_x==lineage)]
+  if (length(gnrs) < 100){next}
+  
+  m_l = knockout_m[,gnrs]
+  m_l <- m_l[rowSums(m_l) != 0,]
+  m_lt <- t(m_l)
+  
+  # Species accumulation curve (random permutations)
+  acc <- specaccum(m_lt, method="random", permutations=100)
+
+  df = data.frame(
+    sites = acc$sites,
+    richness = acc$richness,
+    sd = acc$sd,
+    perm = acc$perm,
+    lineage = rep(lineage,length(acc$sites))
+  )
+  acc_df = rbind(acc_df, df)
+}
+
+summary(as.factor(acc_df$lineage))
+
+col_schemes <- load_color_schemes()
+
+ggplot(subset(acc_df, lineage %in% c('L1', 'L2', 'L3', 'L4', 'L5', 'L6')), aes(x=sites, y=richness, col=lineage)) + geom_line(alpha=1, size=1)+
+  geom_line(aes(y=richness-sd,col=lineage), linetype='dashed',size=0.2) +
+  geom_line(aes(y=richness+sd,col=lineage), linetype='dashed', size=0.2) +
+  xlab("Sampled strains") + ylab("Knocked-out genes") +
+  scale_color_manual(values=col_schemes$col_scale_black) +
+  theme_bw()
+
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/figures/figX.accumulaiton_curves.pdf', width=14, height = 10, units = 'cm')
+
+# Model nr. of k.o. genes at 500 strains ~ lineage diversity * mean IS CN
+subset(acc_df, sites==500)
+
+
+```
+
+
+
+## Essentiality
+How do genes never affected by IS6110 compare to in vitro essential genes, as defined by De Jesus et al. 2017?
+
+Expectation: Many more genes should be needed in clinico!
+
+How many of the knockouts occur only once, how many in multiple strains?
+
+Are knockouts clade-specific, or are some genes affected throughout the MTBC?
+```{r}
+library(ggplot2)
+
+# Table S3 in De Jesus et al.
+orfs_dejesus <- read.csv('manuscript/literatura/DeJesus2017/orfs.csv', sep= '\t')
+
+
+# Nr. of interrupted genes: 870
+refins_dejesus <- merge(refins, orfs_dejesus, by.x='context', by.y="ORF.ID")
+refins_dejesus_ne <- subset(refins_dejesus, Final.Call=='NE')
+
+# NE in DeJesus that do not have IS6110 insertions
+ne_genes = orfs_dejesus$ORF.ID[which(orfs_dejesus$Final.Call=='NE')]
+length(ne_genes)
+
+
+
+setdiff(unique(refins_ko$gene_rv), ne_genes)
+
+table(refins_dejesus$Final.Call)
+
+refins_dejesus_es <- subset(refins_dejesus, Final.Call=='ES')
+length(unique(refins_dejesus_es$context))
+
+# Plot essentiality categories
+ggplot(refins_dejesus, aes(Final.Call)) + geom_histogram(stat='count')
+```
+
+
+
+
+
+# Hotspots of IS6110
+
+Count how many times genic and intergenic regions were hit. 
+For the niche model: can we obtain an estimate of how much of the genome is permissible?
+
+Visualization:
+  - tree: branches colored according to presence/absence of IS in region (on color per independent insertion)
+  - genomic context: show gene model and insertion locations e.g. as triangles, size/col showing nr. of independent events
+
+
+
+## Adaptive parallelism index
+```{r}
+library(ggplot2)
+library(ggrepel)
+library(viridis)
+
+# Plot: nr of independent insertions vs. median size of clusters with a specific insertion!
+head(hotspots)
+
+regions = unique(hotspots$region)
+
+hotspots_summary <- data.frame(
+  region = regions,
+  nsites = rep(0, length(regions)),
+  nbirths = rep(0, length(regions)),
+  ndeaths = rep(0, length(regions)),
+  strains_min = rep(0, length(regions)),
+  strains_max = rep(0, length(regions)),
+  strains_mean = rep(0, length(regions)), 
+  strains_total = rep(0, length(regions))
+)
+
+
+
+for (i in 1:length(regions)){
+  r = regions[i]
+  hotspots_sub = subset(hotspots, region == r)
+  hotspots_summary$nsites[i] = nrow(hotspots_sub)
+  hotspots_summary$nbirths[i] = sum(hotspots_sub$births)
+  hotspots_summary$ndeaths[i] = sum(hotspots_sub$deaths)
+  hotspots_summary$strains_min[i] = min(hotspots_sub$nstrains)
+  hotspots_summary$strains_max[i] = max(hotspots_sub$nstrains)
+  hotspots_summary$strains_mean[i] = mean(hotspots_sub$nstrains)
+  hotspots_summary$strains_total[i] = sum(hotspots_sub$nstrains)
+}
+
+
+# Adaptive parallelism index API
+hotspots_summary$API = hotspots_summary$nsites * log10(hotspots_summary$strains_mean + 1)
+ggplot(hotspots_summary, aes(API)) + geom_density()
+
+# How do measures of parallelism compare?
+ggplot(subset(hotspots_summary, nbirths>1), aes(nsites, API)) + geom_point(alpha=0.6) +
+  geom_label_repel(data=subset(hotspots_summary, API>20), aes(label=region), label.size=0, size = 3) +
+  theme_bw() + 
+  xlab("Number of independent insertion sites") + ylab("Parallelism index") +
+  scale_color_viridis(option='A', end = 0.8)
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/presentations/labmeeting.21-10-2025/figures/adaptive_parallelism.pdf', width=22, height = 17, units = 'cm')
+
+
+# Distribution of PI/nsites etc
+table(hotspots_summary$nsites)
+
+ggplot(hotspots_summary, aes(nsites)) + geom_histogram() +  theme_bw() + xlab('Number of independent insertion sites') + ylab("Count")
+
+ggsave('/home/cristobal/TB/projects/MTBC_IS6110-poly/presentations/labmeeting.21-10-2025/figures/n_indepentend_sites_dist.pdf', width=15, height = 10, units = 'cm')
+
+```
+
+ 
+## Plot hotspot on tree
+```{r}
+library(ggplot2)
+library(magrittr)
+library(ggtree)
+library(tidytree)
+library(RColorBrewer)
+library(ggrepel)
+library(viridis)
+
+hotspot_cnt = as.data.frame(table(hotspots$region))
+
+# Get ancestral states. For region of interest, add states to tree
+anc_states_five = read.csv('workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv', sep='\t')
+names(anc_states_five) <- gsub('X', '', names(anc_states_five))
+
+p <- ggtree(tree, layout="circular", col='grey90',size=0.1, alpha=0.8) %<+% metadata
+
+
+# example: mtbc0_001868 (plcD)
+hotspots_of_interest = c('dnaA;dnaN', 'mtbc0_000805;phoP', 'mtbc0_001868','mtbc0_001879;mtbc0_001880','mtbc0_002031')
+
+
+focal = 'mtbc0_002031'
+hotspots_sub = subset(hotspots, region == focal)  
+anc_states_sub = anc_states_five[,c('node', hotspots_sub$site_id)]
+
+# Are there strains with multiple insertions in the same region? Yes
+table(rowSums(anc_states_sub[,-1]))
+
+
+# Create two new columns for the tree: insertion_site, births
+anc_state_compressed <- data.frame(
+  'node' = anc_states_sub$node,
+  'insertion_site' = rep(NA, nrow(anc_states_sub))
+)
+
+for (site_id in hotspots_sub$site_id){
+  anc_state_compressed$insertion_site[which(anc_states_sub[[site_id]]>0.5)] <- site_id
+}
+
+p$data$insertion_site = anc_state_compressed$insertion_site[match(p$data$node, anc_state_compressed$node)]
+
+p + geom_tree(data=subset(p$data, !(is.na(insertion_site))), aes(col=insertion_site), size=0.3) + 
+  theme(legend.position = "none")
+
+
+# Save tree to file and crop white space
+dest = paste("presentations/labmeeting.21-10-2025/figures/", focal, '.pdf')
+ggsave(dest, width = 15, height = 15, units = "cm", device = cairo_pdf) 
+
+
+```
+
+## Plot gene models and mutations
+```{r}
+library(ggplot2)
+
+head(genemap)
+head(hotspot)
+
+focal = 'mtbc0_000805;phoP'
+
+# Get mutations
+hotspot_sub = subset(hotspots, region == focal)
+hotspot_sub$position <- as.integer(hotspot_sub$position)
+
+# Create data frame with gene coordinates
+focal_splt = strsplit(focal, ';') %>% unlist()
+geneA = focal_splt[1]
+geneB = focal_splt[2]
+
+genemap_sub = subset(genemap, mtbc0_gene_id == geneA | gene_id == geneA | mtbc0_gene_id == geneB| gene_id == geneB)
+genemap_sub$length = genemap_sub$end - genemap_sub$start
+genemap_sub$mid = genemap_sub$start + (genemap_sub$length/2)
+
+# --- Compute x-axis limits based on mutation positions ---
+x_min <- min(hotspot_sub$position) - 100
+x_max <- max(hotspot_sub$position) + 100
+
+# --- Define y positions for layers ---
+gene_ymin <- 0
+gene_ymax <- 0.02   # thin rectangles
+label_y   <- 0.01   # vertically centered labels
+mut_y     <- 0.025   # triangles above genes
+
+# --- Plot ---
+ggplot() +
+  
+  geom_rect(
+    data = genemap_sub,
+    aes(xmin = start, xmax = end, ymin = gene_ymin, ymax = gene_ymax),
+    color = "black", fill = "steelblue", alpha = 0.6
+  ) +
+  geom_text(
+    data = genemap_sub,
+    aes(x = mid, y = label_y, label = gene_id),
+    size = 5, vjust = 0.5, color = "black"
+  ) +
+  geom_point(
+    data = hotspot_sub,
+    aes(x = as.integer(position), fill = births, y = mut_y),
+    shape = 25, size = 6, alpha = 0.4, color = "black"
+  ) +
+  scale_fill_viridis_c(option = "plasma", direction = -1) +
+  xlab("Genomic position") +
+  coord_cartesian(xlim = c(x_min, x_max), ylim = c(0, 0.05), expand = FALSE) +
+  theme_minimal() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor   = element_blank(),
+    legend.title       = element_blank(),
+    axis.title.y       = element_blank(),
+    axis.text.y        = element_blank(),
+    axis.ticks.y       = element_blank(),
+    axis.line.y        = element_blank()
+  )
+  
+```
+
+
+
+
+# Constrained niche model
+A simple model to explain IS copy number variation, hotspots, symmetry etc.:
+Few loci in the genome where IS can insert safely. This are hit by chance, and once hit,
+additional copies increase the birth rate. Model implemented in contrained_niche_evolution.py.
+
+Use downsampled tree, e.g. 500 strains.
+
+Fit model to data using approximate Bayesian computation. Summary statistics: median CN, var(CN)_clades, ...
+Chose initial distributions according to real data (birth rate, death rate, max_number ...). 
+Fixed: initial_copies = 1, max_niches = 38
+Fitted: p_lethal, r_birth, r_death
+
+p_lethal = 0.95
+r_transpose = 4000
+r_delete = 0
+max_niches = 40
+initial_copies = 1
+
+
+
+## Approximate Bayesian computation
+
+Simulation test run
+```{r}
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+```
+
+
+Test run with the spatially explicit model
+```{r}
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40",
+  "--spatial",
+  "--niches", "10000"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+```
+
+
+Summary statistics
+```{r}
+
+library(ape)
+library(ggplot2)
+library(ggtree)
+library(viridis)
+library(dplyr)
+
+load('is6110.RData')
+
+get_summary_stats <- function(copy_numbers, metadata){
+  
+  copy_numbers$lineage = metadata$lineage[match(copy_numbers[,1], metadata$GNUMBER)]
+  
+  cladevar = copy_numbers %>% 
+    group_by(lineage) %>%
+    summarize(Mean = mean(CN), SD = sd(.[[2]]))
+  
+  summdata = list(
+    'Mean' = mean(copy_numbers[,2]),
+    'SD' = sd(copy_numbers[,2]),
+    'min' = min(copy_numbers[,2]),
+    '25%' = quantile(copy_numbers[,2], 0.25),
+    '50%' = quantile(copy_numbers[,2], 0.5),
+    '75%' = quantile(copy_numbers[,2], 0.75),
+    'max' = max(copy_numbers[,2]),
+    'cladevar' = var(cladevar$Mean),
+    'cladesd' = sd(cladevar$Mean)
+  ) 
+  return(summdata)
+}
+
+
+treesim = read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+plot(treesim, show.tip.label = FALSE)
+copy_numbers_sub <- subset(copy_numbers, strain %in% tree$tip.label)
+head(copy_numbers_sub)
+stats_obs = get_summary_stats(copy_numbers_sub,metadata)
+stats_obs
+
+```
+
+
+## Get posterior distributions
+```{r}
+library(abc)
+library(magrittr)
+
+
+params_mat <- read.csv('workflow/results/niche_model/abc_params.tsv', sep='\t') %>% as.matrix()
+colnames(params_mat) <- c('p_lethal', 'r_birth', 'r_death')
+dim(params_mat)
+summary(params_mat)
+
+
+
+summaries_mat <- read.csv('workflow/results/niche_model/abc_summaries.tsv', sep='\t') %>% as.matrix()
+colnames(summaries_mat) <- c('Mean', 'SD', 'min', '25%', '50%',  '75%', 'max', 'cladevar', 'cladesd')
+dim(summaries_mat)
+
+# Run abc (rejection followed by local linear regression)
+abc_res <- abc(target = stats_obs,
+               param = params_mat,
+               sumstat = summaries_mat,
+               tol = 0.001,   # keep top 1% closest sims
+               method = "neuralnet")
+
+summary(abc_res)
+abc_res
+plot(abc_res, params_mat)
+hist(abc_res)
+
+plot(density(abc_res$dist))
+
+```
+
+Plot parameter combinations vs distance to visualize peaks
+```{r}
+library(plotly)
+
+str(abc_res)
+
+abc_res_best = abc_res$region
+
+abc_dists <- data.frame(
+  p_lethal =  params_mat[,'p_lethal'][abc_res_best],
+  r_birth = params_mat[,'r_birth'][abc_res_best],
+  r_death = params_mat[,'r_death'][abc_res_best],
+  p_lethal_adj = abc_res$adj.values[,'p_lethal'],
+  r_birth_adj = abc_res$adj.values[,'r_birth'],
+  r_death_adj = abc_res$adj.values[,'r_death'],
+  dist = abc_res$dist[abc_res_best]
+)
+
+head(abc_dists)
+
+# r_birth vs p_lethal
+ggplot(abc_dists, aes(r_birth, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+# with adjusted values
+ggplot(abc_dists, aes(r_birth_adj, p_lethal_adj, col=dist)) + geom_point(size=3, alpha=0.5) +
+  scale_color_viridis(option = 'turbo') + theme_bw() + xlab('Birth rate') + ylab('Proportion of inaccessible sites')
+
+# How do adjusted and unadjusted values compare?
+ggplot(abc_dists, aes(r_birth_adj, r_birth, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+ggplot(abc_dists, aes(p_lethal_adj, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+
+# 3d plot
+plot_ly(
+  abc_dists,
+  x = ~r_birth, y = ~p_lethal, z = ~-dist,
+  intensity = ~-dist,
+  type = "mesh3d",
+  colors= colorRamp(rainbow(5))
+)
+
+
+```
+
+Cross validation
+```{r}
+cv = cv4abc(params_mat,summaries_mat, abc_res, 100, c(0.01, 0.001), 'mean')
+
+```
+
+
+
+
+Get best model and re-run to get copy numbers
+```{r}
+best_i = which(abc_res$dist==min(abc_res$dist))
+params_mat[best_i,]
+summaries_mat[best_i,]
+stats_obs
+
+
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+head(cn_sim)
+```
+
+
+## Figure
+
+A) Observed and simulated copy numbers with parameter values sampled from the posterior. B) Posterior distributions for birth rate, death rate, and the proportion of suitable niches in the genome.
+
+```{r}
+library(ggtree)
+library(ggplot2)
+library(ape)
+library(viridis)
+
+
+tree <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+
+p <- ggtree(tree, alpha=0.1, size=0) 
+# Add observed values to tree
+p$data$copy_number <- copy_numbers$CN[match(p$data$label, copy_numbers$strain)]
+# Add simulated values to tree
+p$data$copy_number_simulated <- cn_sim$copies[match(p$data$label, cn_sim$tip)]
+
+# Plot trees
+## Observed
+a <- p + geom_tree(aes(col=copy_number)) + scale_color_viridis(option = 'turbo', guide="none") + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5, linetype='dashed'))
+
+## Simulated
+b <- p + geom_tree(aes(col=copy_number_simulated)) + scale_color_viridis(option = 'turbo', guide="none")
+
+## Combine
+cowplot::plot_grid(a,b)
+
+# Plot posterior distributions
+
+
+
+```
+
+
+## Posterior predictive checks
+
+```{r}
+post_params <- post$adj.values    # or post$unadj.values
+
+# Draw posterior samples
+n_sim <- 1000       # how many posterior predictive simulations  
+idx <- sample(1:nrow(post_params), n_sim, replace = TRUE)
+pp_params <- post_params[idx, ]
+
+# Simulate data
+pp_sims = 
+
+# Compute summary stats
+pp_sumstats <- t(sapply(pp_sims, compute_sumstats)) 
+
+
+# Compare predictive distribution vs observed summary stats
+pp_check <- abc::gfit(target = obs_stats,
+                      sumstat = sumstats_matrix,
+                      nb.repl = 1000)  # posterior predictive sims
+plot(pp_check)
+
+# Posterior predictive P values
+pp_pvals <- colMeans(pp_sumstats >= matrix(obs_stats,
+                                           nrow=n_sim,
+                                           ncol=length(obs_stats),
+                                           byrow=TRUE))
+pp_pvals
+
+
+
+```
+
+## Figure
+

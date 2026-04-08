@@ -1,0 +1,327 @@
+---
+title: "A niche constraints model for the evolutionary dynamics of IS6110"
+output:
+  html_document: 
+    theme: simplex
+date: "2025-03-19"
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+
+
+# Snakemake I/O
+```{r}
+paths <- tryCatch(
+  {
+    list(
+      branchsummary_5 = snakemake@input[[1]],
+      output_html     = snakemake@output[[1]]
+    )
+  },
+  error = function(e){
+    list(
+      branchsummary_5 = 'workflow/results/detettore/AS_5prime.branch_summary.tsv',
+      output_html     = NULL  # or whatever default makes sense
+    )
+  }
+)
+
+```
+
+# Constrained niche model
+A simple model to explain IS copy number variation, hotspots, symmetry etc.:
+Few loci in the genome where IS can insert safely. This are hit by chance, and once hit,
+additional copies increase the birth rate. Model implemented in contrained_niche_evolution.py.
+
+Use downsampled tree, e.g. 500 strains.
+
+Fit model to data using approximate Bayesian computation. Summary statistics: median CN, var(CN)_clades, ...
+Chose initial distributions according to real data (birth rate, death rate, max_number ...). 
+Fixed: initial_copies = 1, max_niches = 38
+Fitted: p_lethal, r_birth, r_death
+
+p_lethal = 0.95
+r_transpose = 4000
+r_delete = 0
+max_niches = 40
+initial_copies = 1
+
+
+
+## Approximate Bayesian computation
+
+Simulation test run
+```{r}
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+```
+
+
+Test run with the spatially explicit model
+```{r}
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40",
+  "--spatial",
+  "--niches", "10000"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+```
+
+
+Summary statistics
+```{r}
+
+library(ape)
+library(ggplot2)
+library(ggtree)
+library(viridis)
+library(dplyr)
+
+load('is6110.RData')
+
+get_summary_stats <- function(copy_numbers, metadata){
+  
+  copy_numbers$lineage = metadata$lineage[match(copy_numbers[,1], metadata$GNUMBER)]
+  
+  cladevar = copy_numbers %>% 
+    group_by(lineage) %>%
+    summarize(Mean = mean(CN), SD = sd(.[[2]]))
+  
+  summdata = list(
+    'Mean' = mean(copy_numbers[,2]),
+    'SD' = sd(copy_numbers[,2]),
+    'min' = min(copy_numbers[,2]),
+    '25%' = quantile(copy_numbers[,2], 0.25),
+    '50%' = quantile(copy_numbers[,2], 0.5),
+    '75%' = quantile(copy_numbers[,2], 0.75),
+    'max' = max(copy_numbers[,2]),
+    'cladevar' = var(cladevar$Mean),
+    'cladesd' = sd(cladevar$Mean)
+  ) 
+  return(summdata)
+}
+
+
+treesim = read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+plot(treesim, show.tip.label = FALSE)
+copy_numbers_sub <- subset(copy_numbers, strain %in% tree$tip.label)
+head(copy_numbers_sub)
+stats_obs = get_summary_stats(copy_numbers_sub,metadata)
+stats_obs
+
+```
+
+
+## Get posterior distributions
+```{r}
+library(abc)
+library(magrittr)
+
+
+params_mat <- read.csv('workflow/results/niche_model/abc_params.tsv', sep='\t') %>% as.matrix()
+colnames(params_mat) <- c('p_lethal', 'r_birth', 'r_death')
+dim(params_mat)
+summary(params_mat)
+
+
+
+summaries_mat <- read.csv('workflow/results/niche_model/abc_summaries.tsv', sep='\t') %>% as.matrix()
+colnames(summaries_mat) <- c('Mean', 'SD', 'min', '25%', '50%',  '75%', 'max', 'cladevar', 'cladesd')
+dim(summaries_mat)
+
+# Run abc (rejection followed by local linear regression)
+abc_res <- abc(target = stats_obs,
+               param = params_mat,
+               sumstat = summaries_mat,
+               tol = 0.001,   # keep top 1% closest sims
+               method = "neuralnet")
+
+summary(abc_res)
+abc_res
+plot(abc_res, params_mat)
+hist(abc_res)
+
+plot(density(abc_res$dist))
+
+```
+
+Plot parameter combinations vs distance to visualize peaks
+```{r}
+library(plotly)
+
+str(abc_res)
+
+abc_res_best = abc_res$region
+
+abc_dists <- data.frame(
+  p_lethal =  params_mat[,'p_lethal'][abc_res_best],
+  r_birth = params_mat[,'r_birth'][abc_res_best],
+  r_death = params_mat[,'r_death'][abc_res_best],
+  p_lethal_adj = abc_res$adj.values[,'p_lethal'],
+  r_birth_adj = abc_res$adj.values[,'r_birth'],
+  r_death_adj = abc_res$adj.values[,'r_death'],
+  dist = abc_res$dist[abc_res_best]
+)
+
+head(abc_dists)
+
+# r_birth vs p_lethal
+ggplot(abc_dists, aes(r_birth, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+# with adjusted values
+ggplot(abc_dists, aes(r_birth_adj, p_lethal_adj, col=dist)) + geom_point(size=3, alpha=0.5) +
+  scale_color_viridis(option = 'turbo') + theme_bw() + xlab('Birth rate') + ylab('Proportion of inaccessible sites')
+
+# How do adjusted and unadjusted values compare?
+ggplot(abc_dists, aes(r_birth_adj, r_birth, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+ggplot(abc_dists, aes(p_lethal_adj, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
+  scale_color_viridis(option = 'turbo')
+
+
+# 3d plot
+plot_ly(
+  abc_dists,
+  x = ~r_birth, y = ~p_lethal, z = ~-dist,
+  intensity = ~-dist,
+  type = "mesh3d",
+  colors= colorRamp(rainbow(5))
+)
+
+
+```
+
+Cross validation
+```{r}
+cv = cv4abc(params_mat,summaries_mat, abc_res, 100, c(0.01, 0.001), 'mean')
+
+```
+
+
+
+
+Get best model and re-run to get copy numbers
+```{r}
+best_i = which(abc_res$dist==min(abc_res$dist))
+params_mat[best_i,]
+summaries_mat[best_i,]
+stats_obs
+
+
+args <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_lethal",  "0.6621324",
+  "--r_birth", "4507.4047070",
+  "--r_death", "249.1706106",
+  "--initial_copies", "1",
+  "--max_copies", "40"
+)
+
+
+stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
+cn_sim = read.delim(text=stdout, sep='\t')
+head(cn_sim)
+```
+
+
+## Figure
+
+A) Observed and simulated copy numbers with parameter values sampled from the posterior. B) Posterior distributions for birth rate, death rate, and the proportion of suitable niches in the genome.
+
+```{r}
+library(ggtree)
+library(ggplot2)
+library(ape)
+library(viridis)
+
+
+tree <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+
+p <- ggtree(tree, alpha=0.1, size=0) 
+# Add observed values to tree
+p$data$copy_number <- copy_numbers$CN[match(p$data$label, copy_numbers$strain)]
+# Add simulated values to tree
+p$data$copy_number_simulated <- cn_sim$copies[match(p$data$label, cn_sim$tip)]
+
+# Plot trees
+## Observed
+a <- p + geom_tree(aes(col=copy_number)) + scale_color_viridis(option = 'turbo', guide="none") + 
+  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5, linetype='dashed'))
+
+## Simulated
+b <- p + geom_tree(aes(col=copy_number_simulated)) + scale_color_viridis(option = 'turbo', guide="none")
+
+## Combine
+cowplot::plot_grid(a,b)
+
+# Plot posterior distributions
+
+
+
+```
+
+
+## Posterior predictive checks
+
+```{r}
+post_params <- post$adj.values    # or post$unadj.values
+
+# Draw posterior samples
+n_sim <- 1000       # how many posterior predictive simulations  
+idx <- sample(1:nrow(post_params), n_sim, replace = TRUE)
+pp_params <- post_params[idx, ]
+
+# Simulate data
+pp_sims = 
+
+# Compute summary stats
+pp_sumstats <- t(sapply(pp_sims, compute_sumstats)) 
+
+
+# Compare predictive distribution vs observed summary stats
+pp_check <- abc::gfit(target = obs_stats,
+                      sumstat = sumstats_matrix,
+                      nb.repl = 1000)  # posterior predictive sims
+plot(pp_check)
+
+# Posterior predictive P values
+pp_pvals <- colMeans(pp_sumstats >= matrix(obs_stats,
+                                           nrow=n_sim,
+                                           ncol=length(obs_stats),
+                                           byrow=TRUE))
+pp_pvals
+
+
+
+```
+
+## Figure
+
