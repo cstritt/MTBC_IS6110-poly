@@ -23,10 +23,10 @@ phylogeny:
 
 annotations:
   mtbc0: ../data/MTBC0/MTBC0v1.1_PGAP_annot.gff
-  mtbc0_regions: ../data/MTBC0/MTBC0.genic_n_intergenic_regions.burden.tsv
+  mtbc0_regions: ../data/MTBC0/MTBC.genomic_regions.tsv
+  mtbc0_region_seqs: ../data/MTBC0/MTBC0_CDS_intergenic.fasta
   h37rv: ../data/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
   mtbc0_h37rv_map: ../data/MTBC0/mtbc0_to_h37rv.genemap.tsv
-  mtbc0_regions: ../data/MTBC0/MTBC0.genic_n_intergenic_regions.burden.tsv
 
 gwas:
   permutations: 100
@@ -42,6 +42,8 @@ motif:
   nmotifs:      20
   seed:         42
   streme_extra: ""      # any additional STREME flags
+  hotspot_threshold: 10
+  n_backgrounds: 10
 
 benchmarking:
   assemblies: config/datasets/31assemblies.tsv
@@ -54,4 +56,4 @@ benchmarking:
 
 niche_model_abc:
   ntips : 500
-  nsimulations : 1000000
+  nsimulations : 10000

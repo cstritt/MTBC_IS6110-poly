@@ -6,84 +6,59 @@ library(ape)
 library(castor)
 library(magrittr)
 
+# Load phylogeny
 tree <- read.tree(args[1])
-refins <- read.delim(args[2], sep='\t', header=TRUE)
-outpath <- args[3]
+
+# Five prime presence-absence matrix
+matrix5 <- read.csv(args[2], sep='\t')
+rownames(matrix5) <- matrix5[,1]
+matrix5 <- matrix5[,-1]
+colnames(matrix5) <- gsub('X', '', colnames(matrix5))
+
+# Matrix metadata
+matrix_metadata <- read.csv(args[3], sep='\t')
+
+# Output path
+outpath <- args[4]
 
 
-# Create strainXregion matrix --------------------------
+# Disrupted regions
+regions = unique(matrix_metadata$context) %>% na.omit()
 
-strains = tree$tip.label
-regions = unique(refins$gene)
-
-# Empty matrix with strains in rows and regions in columns
-regionmat = matrix(
-  nrow=length(strains), 
-  ncol=length(regions),
-  dimnames=list(strains, regions)
-  )
-
-npos = list()  # Number of positions per region
-
-# Fill matrix
-for (i in 1:nrow(refins)){
-
-  if (i%%1000==0){print(i)}
-
-  row = refins[i,]
-  strain = row$strain
-  region = row$gene
-  position = row$position
-  strand = row$strand
-
-  regionmat[strain,region] = 1
-
-  # Collect different positions per region
-  if (!(region %in% names(npos))){
-    npos[[region]] = c(position)
-    }
-  else {
-    npos[[region]] = c(npos[[region]], position)
-    }
-}
-
-# Convert NA to 0
-regionmat[is.na(regionmat)] <- 0
-
-
-# Loop through regions and infer number of independent insertions --------------------------
+# Reorder matrix rows so they match the tree!
+phyl_order <- match(tree$tip.label, rownames(matrix5))
+matrix5 <- matrix5[phyl_order,]
+all(rownames(matrix5) == tree$tip.label)
 
 hotspot_summary = data.frame()
 
-for (i in 1:ncol(regionmat)){
+for (region in regions){
 
-  if (i%%100==0){print(i)}
-  
-  site_vec <- regionmat[, i]
-  site_id = colnames(regionmat)[i]
+  ufs = subset(matrix_metadata, side==5 & context == region)$site_id
+  if (length(ufs)==0){next}
 
-  # Skip constant or NA-only sites
-  if (any(is.na(site_vec)) || length(unique(site_vec)) == 1) next
-      
+  regionmat = matrix5[,ufs]
+
+  if (length(ufs) == 1){regionmat_vec = regionmat}
+  else {regionmat_vec = as.integer(rowSums(regionmat) > 0)}
+  nstrains = sum(regionmat_vec)
+
   # Convert to numeric starting with 1
-  site_vec_mapped <- map_to_state_space(site_vec)
-  index2name = names(site_vec_mapped$name2index)
-  index2name <- setNames(index2name, unname(site_vec_mapped$name2index))
+  regionmat_vec_mapped <- map_to_state_space(regionmat_vec)
 
   # Reconstruct ancestral states
-  asr_result <- asr_max_parsimony(tree, tip_states = site_vec_mapped$mapped_states)
+  asr_result <- asr_max_parsimony(tree, tip_states = regionmat_vec_mapped$mapped_states)
 
-  # Go through tree and record transitions
-  ntips = length(tree$tip.label)
-  # Nr. of strains that contain an insertion in the region
-  nstrains = sum(site_vec_mapped$mapped_states!=1) 
-  # Number of different uFS
-  #nstates = site_vec_mapped$Nstates - 1
-
+  # Which column in ancestral_likelihoods corresponds to presence (1)?
+  presence_state_index <- regionmat_vec_mapped$name2index[["1"]]
   # For each node, store likelihood of presence
-  lh_presence <- asr_result$ancestral_likelihoods[,2]
+  lh_presence <- asr_result$ancestral_likelihoods[, presence_state_index]
+
   # Combine tip and internal node states
-  full_states <- c(unname(site_vec), lh_presence)
+  # Use mapped tip states (1=absent, 2=present) converted to 0/1
+  tip_states_01 <- ifelse(regionmat_vec_mapped$mapped_states == 1, 0, 1)
+  full_states <- c(tip_states_01, lh_presence)
+  full_states_binary <- ifelse(full_states > 0.5, 1, 0)
 
   # Count number of independent birth/insertion events
   nbirths = 0
@@ -94,8 +69,8 @@ for (i in 1:ncol(regionmat)){
     parent = tree$edge[j, 1]
     child  = tree$edge[j, 2]
 
-    parent_state = full_states[parent]
-    child_state = full_states[child]
+    parent_state = full_states_binary[parent]
+    child_state = full_states_binary[child]
 
     # No change
     if (parent_state == child_state) next
@@ -106,12 +81,12 @@ for (i in 1:ncol(regionmat)){
   }
 
   row = data.frame(
-    'region' = site_id,
+    'region' = region,
     'nstrains' = nstrains,
     'nbirths' = nbirths,
     'ndeaths' = ndeaths
   )
-  print(row)
+  #print(row)
   hotspot_summary = rbind(hotspot_summary, row)
 }
 

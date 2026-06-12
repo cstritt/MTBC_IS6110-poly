@@ -265,10 +265,14 @@ log(f"[write] {snakemake.output.fg}  ({len(weighted_records):,} seqs)")
 foreground_lengths = [len(rec.seq) for rec in weighted_records]
 
 # Background (use median size of foreground sequences, randomly sampled from genome)
-bg_records = build_background(genome_seq, foreground_lengths, seed)
+for i, bg_path in enumerate(snakemake.output.bg):
+    bg_records = build_background(
+        genome_seq, foreground_lengths,
+        seed = snakemake.params.seed + i   # different seed per file
+    )
+    SeqIO.write(bg_records, bg_path, "fasta")
+    log(f"[write] {bg_path}  ({len(bg_records):,} seqs)")
 
-SeqIO.write(bg_records, snakemake.output.bg, "fasta")
-log(f"[write] {snakemake.output.bg}  ({len(bg_records)} seqs)")
 
 log("=== motif_prep.py done ===")
 log_fh.close()

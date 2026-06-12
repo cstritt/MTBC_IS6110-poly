@@ -41,6 +41,7 @@ paths <- tryCatch(
 
 
 # IS6110 diversity
+Count the number of pairwise IS6110 differences within each lineage. 
 ```{r}
 library(ggplot2)
 library(magrittr)
@@ -54,8 +55,8 @@ library(Matrix)
 load(paths$rdata)
 
 # If adding SNP distances to table, subsample to avoid OOM crash
-add_snp_dist = FALSE  # OOM!
-subsample_n = 0
+add_snp_dist = TRUE  # OOM!
+subsample_n = 1500
 
 is_allele_spec <- function(mat){
   " Get binned IS allele frequencies from a matrix
@@ -118,7 +119,7 @@ to_table <- function(mat, value_name = "value") {
     dplyr::rename(!!value_name := value)
 }
 
-# Optionally add SNP distances (may required subsampling)
+# Optionally add SNP distances (may require subsampling)
 if (add_snp_dist){
   dm <- cophenetic(tree)
   gnrs = rownames(dm)
@@ -127,7 +128,6 @@ if (add_snp_dist){
 # Create data frame with pairwise IS6110 and SNP distances!
 pairwise_differences <- data.frame()
 shared_allele_proportions <- data.frame()
-
 
 for (l in lineage_order){
   if (l %in% c('L8', 'L10', 'Dassie bacillus')){next}
@@ -171,26 +171,53 @@ for (l in lineage_order){
 
 by(pairwise_differences$is6110_distance, pairwise_differences$lineage, summary)
 
+
+# Normalized IS distances
+pairwise_differences$is6110_normalized <- pairwise_differences$is6110_distance / pairwise_differences$snp_distance
+
 # Overall differences
 #diff_mat_full = pairwise_diff_raw(matrices$`5`)
 #median(diff_mat_full)
 ```
 
 ## Figure 3
+
+```{r}
+library(cowplot)
+
+# Raw IS distances
+# Panel A1: Raw IS distances
+a1 <- ggplot(pairwise_differences, aes(lineage, is6110_distance)) + 
+  geom_boxplot(outlier.size = 0.5, size = 0.3, alpha = 0.7) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
+  xlab("Lineage") + ylab(expression("Pairwise IS6110 differences " ~ d[IS])) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Panel A2: Normalized IS distances
+a2 <- ggplot(pairwise_differences, aes(lineage, is6110_normalized)) + 
+  geom_boxplot(outlier.size = 0.5, size = 0.3, alpha = 0.7) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
+  xlab("Lineage") + ylab(expression("Normalized IS6110 differences " ~ d[IS] / d[xy])) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+plot_grid(a1, a2, ncol = 2, labels = c('A', 'B'), label_fontfamily = 'CMU Sans Serif')
+
+ggsave('figures/main/fig3.IS_diversity.png', width = 22, height = 10, units = "cm", dpi = 300) 
+
+
+```
+
+Supplement: proportion of high-frequency insertions.
 ```{r}
 library(ggrepel)
 library(dplyr)
-
-
-panelA <- ggplot(pairwise_differences, aes(lineage, is6110_distance)) + geom_boxplot(outlier.size=0.5, size=0.3) +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) + xlab("Lineage") + ylab("IS6110 pairwise differences") 
 
 
 # Allele frequency spectrum
 focal = c('L1', 'L2', 'L3', 'L4','L5', 'L6', 'La1', 'La2', 'La3')
 #focal = c('L1', 'L2', 'L3', 'L4', 'La3')
 
-b <- subset(shared_allele_proportions, lineage %in% focal) %>%
+subset(shared_allele_proportions, lineage %in% focal) %>%
   melt(measure.vars = c('low', 'lowmid', 'midhigh', 'high'), id.vars='lineage') %>%
   ggplot(aes(x=variable, y=value, fill=lineage)) + geom_histogram(stat='identity', position='dodge') +
   scale_fill_manual(values=mtb_col_scale) + theme_bw(base_family = "CMU Sans Serif", base_size = 12)
@@ -209,7 +236,7 @@ shared_allele_proportions$f0.5_0.75 <-
 shared_allele_proportions$f0.75_1 <- 
   shared_allele_proportions$high * shared_allele_proportions$nsites
 
-panelB <- subset(shared_allele_proportions, lineage %in% focal) %>%
+subset(shared_allele_proportions, lineage %in% focal) %>%
   melt(measure.vars = c('f0.25_0.5', 'f0.5_0.75', 'f0.75_1'), id.vars='lineage') %>%
   ggplot(aes(x = variable, y = value, fill = lineage)) +
   geom_histogram(stat = 'identity', position = 'dodge') +
@@ -225,11 +252,11 @@ panelB <- subset(shared_allele_proportions, lineage %in% focal) %>%
   xlab("Frequency category") +
   facet_wrap(~variable, scales = 'free_x')
 
-panelB
+ggsave('figures/supplement/figS4.frequency_categories.png', width = 18, height = 14, units = "cm", dpi = 300) 
 
 
-# Panel B beta
-panelB <- subset(shared_allele_proportions, lineage %in% focal) %>%
+# Just the high frequency sites
+subset(shared_allele_proportions, lineage %in% focal) %>%
   melt(measure.vars = c('f0.75_1'),
        id.vars = 'lineage') %>%
   mutate(variable = factor(variable,
@@ -241,23 +268,10 @@ panelB <- subset(shared_allele_proportions, lineage %in% focal) %>%
   ylab("Number of high frequency sites") +
   xlab("Lineage")
 
-panelB
-
-
-ggplot(subset(shared_allele_proportions, lineage %in% focal), aes(f0.75_1, high)) + 
-  geom_point() +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) + geom_text_repel(aes(label=lineage), nudge_x = 1, size=2) +
-  xlab("Number of high frequency sites") + ylab("Proportion of high freq. sites")
-
-
-upper <- cowplot::plot_grid(panelA,panelB, ncol=2, labels=c('A', 'B'), label_fontfamily = 'CMU Sans Serif', rel_widths = c(3,2))
-upper
-#ggsave('figures/main/fig3.IS_diversity.png', width = 22, height = 8, units = "cm", dpi = 300) 
 
 
 
 ```
-
 
 
 # Birth and death rates
@@ -265,7 +279,6 @@ How does IS6110 activity vary across the MTBC?
 Do more copies imply more transposition? Or is this impossible to observe due to the effects of strong purifying selection?
 
 Compare the distribution of birth and death rates among lineages! For this, assign lineage to internal nodes using the MRCA information.
-
 
 
 ## Load ancestral state summaries and annotated tree
@@ -283,7 +296,7 @@ branch_smry <- merge(
 
 treedata = read.csv(paths$treedata, sep='\t')
 
-# Add births and deaths
+# Add births and deaths to tree
 treedata <- left_join(treedata, branch_smry, by=c("node" = "child"))
 
 # Assign lineage to internal nodes
@@ -304,8 +317,6 @@ for (i in 1:nrow(mrcas)){
   node_lineage = rbind(node_lineage, desc_df)
 }
 
-node_lineage
-
 treedata$lineage = node_lineage$lineage[match(treedata$node, node_lineage$node)]
 
 # Assign node type terminal/internal
@@ -316,7 +327,11 @@ treedata$node_type <- as.factor(treedata$node_type)
 # Add parent_CN (as appropriate predictor of birth rate!)
 treedata$parent_CN <- treedata$copy_number[match(treedata$parent.x, treedata$node)]
 
-ggplot(treedata, aes(copy_number, parent_CN)) + geom_point() + geom_abline(intercept = 0, slope=1)
+# Parent vs. child node copy number
+ggplot(treedata, aes(copy_number, parent_CN)) + 
+  geom_point() + 
+  geom_abline(intercept = 0, slope=1) +
+  labs(title='Parent vs. child IS6110 copy number')
 
 fit <- lm(copy_number ~ parent_CN, data=treedata)
 summary(fit)
@@ -327,42 +342,16 @@ summary(fit)
 ## Number of births and deaths
 ```{r}
 # How many births and deaths in total?
-n_births_five = round(sum(treedata$births.x))
-n_births_three = round(sum(treedata$births.y))
-n_deaths_five = round(sum(treedata$deaths.x))
-n_deaths_three = round(sum(treedata$deaths.y))
+n_births_five = round(sum(treedata$births.x, na.rm=T))
+n_births_three = round(sum(treedata$births.y, na.rm=T))
+n_deaths_five = round(sum(treedata$deaths.x, na.rm=T))
+n_deaths_three = round(sum(treedata$deaths.y, na.rm=T))
 
 paste('Number of births inferred from 5 prime:', n_births_five)
 paste('Number of births inferred from 3 prime:', n_births_three)
 paste('Number of deaths inferred from 5 prime:', n_deaths_five)
 paste('Number of deaths inferred from 3 prime:', n_deaths_three)
 
-# Proportion of branches with births/deaths
-paste('Branches without births 5 prime: ', length(which(treedata$births.x==0)))
-paste('Branches without births 3 prime: ', length(which(treedata$births.y==0)))
-paste('Branches without deaths 5 prime: ', length(which(treedata$deaths.x==0)))
-paste('Branches without deaths 3 prime: ', length(which(treedata$deaths.y==0)))
-
-# No birth or death
-paste('Branches without events 5 prime: ', length(which(treedata$births.x>0 | treedata$deaths.x>0)))
-paste('Branches without events 3 prime: ', length(which(treedata$births.y>0 | treedata$deaths.y<0)))
-
-# Proportion of births/deaths on terminal branches
-n_births_five_tip = round(sum(treedata$births.x[which(treedata$isTip)]))
-n_births_three_tip = round(sum(treedata$births.y[which(treedata$isTip)]))
-n_deaths_five_tip = round(sum(treedata$deaths.x[which(treedata$isTip)]))
-n_deaths_three_tip = round(sum(treedata$deaths.y[which(treedata$isTip)]))
-
-paste('Proportion of terminal 5 prime births:', n_births_five_tip/n_births_five)
-paste('Proportion of terminal 3 prime births:', n_births_three_tip/n_births_three)
-paste('Proportion of terminal 5 prime deaths:', n_deaths_five_tip/n_deaths_five)
-paste('Proportion of terminal 3 prime deaths:', n_deaths_three_tip/n_deaths_three)
-
-```
-
-
-### Correlation between 5' and 3' estimates
-```{r}
 # Correlation between 5' and 3' estimates
 a <- ggplot(branch_smry, aes(births.x, births.y)) + geom_point() + geom_smooth() + theme_bw() + 
   xlab('Births inferred from 5-prime') + ylab('Births inferred from 3-prime')
@@ -377,50 +366,65 @@ cor(branch_smry$deaths.x,branch_smry$deaths.y)
 paste('Number of deaths inferred from 5 prime:',  sum(treedata$deaths.x))
 paste('Number of deaths inferred from 3 prime:',  sum(treedata$deaths.y))
 
-ggsave('figures/supplement/figSx.births_deaths.corr_five_three.png', width = 16, height = 8, units = "cm", dpi = 300) 
+ggsave('figures/supplement/figS5.births_deaths.corr_five_three.png', width = 16, height = 8, units = "cm", dpi = 300) 
+
 ```
 
 How comes there are so much fewer deaths inferred from the 3' flanking sequences?
 -> strand bias & known bias of ASR in inffering loss events (Cunningham 1999)
 -> solution: focus on births
 
-
-## Estimate birth/death rates
-Substitute minimal values for 0-length branches. Remove the root, for which there are no counts.
+Now get some more information about the distribution of births/deaths on the tree.
 ```{r}
-# Add minimal value to 0-length branches
-treedata <- treedata %>%
-  mutate(
-    # handle zero or non-positive branch lengths (for weights)
-    branch_length_adj = ifelse(is.na(branch.length) | branch.length <= 0,
-                               min(branch.length[branch.length>0], na.rm=TRUE) * 1e-8,
-                               branch.length)
-  )
+# Proportion of births/deaths on terminal branches
+n_births_five_tip = round(sum(treedata$births.x[which(treedata$isTip)]))
+n_births_three_tip = round(sum(treedata$births.y[which(treedata$isTip)]))
+n_deaths_five_tip = round(sum(treedata$deaths.x[which(treedata$isTip)]))
+n_deaths_three_tip = round(sum(treedata$deaths.y[which(treedata$isTip)]))
+
+paste('Proportion of terminal 5 prime births:', n_births_five_tip/n_births_five)
+paste('Proportion of terminal 3 prime births:', n_births_three_tip/n_births_three)
+paste('Proportion of terminal 5 prime deaths:', n_deaths_five_tip/n_deaths_five)
+paste('Proportion of terminal 3 prime deaths:', n_deaths_three_tip/n_deaths_three)
 
 
-# Remove root which lacks birth and death counts
-treedata <- treedata[-which(is.na(treedata$births.x)),]
-
+# Number of branches without births/deaths
+paste('Branches without births 5 prime: ', length(which(treedata$births.x==0)))
+paste('Branches without births 3 prime: ', length(which(treedata$births.y==0)))
+paste('Branches without deaths 5 prime: ', length(which(treedata$deaths.x==0)))
+paste('Branches without deaths 3 prime: ', length(which(treedata$deaths.y==0)))
 
 ```
 
 
-Estimate birth and death rates. For interpretability, convert branch length units to genome-wide rather than per (callable) base pair, because IS births are also per genome rather than per site.
+## Estimate birth/death rates
+Obtain a first approximation of birth/death rates by dividing the number of births by branch length. 
+
+Remove the root, for which there are no counts. 
+
+For interpretability, convert branch length units to genome-wide rather than per (callable) base pair, because IS births are also per genome rather than per site.
+
 ```{r}
+# Remove root which lacks birth and death counts
+treedata <- treedata[-which(is.na(treedata$births.x)),]
+
 # Scale branch length by callable genome size (from 0_prologue.Rmd)
 callable_genome_size = 4411532  - 673325
 treedata$branch.length.gw = treedata$branch.length * callable_genome_size
 
-# Get birth and death rates
+# Estimate birth and death rates
 treedata$birthrate.5 = treedata$births.x/treedata$branch.length.gw
 treedata$deathrate.5 = treedata$deaths.x/treedata$branch.length.gw
 treedata$birthrate.3 = treedata$births.y/treedata$branch.length.gw
 treedata$deathrate.3 = treedata$deaths.y/treedata$branch.length.gw
-
-
 ```
 
-Issue with branches of length 0
+
+### Issue of 0-length branches
+There are some branches of length 0. Two ways to deal with them:
+ - Add very small length. Problematic because this creates arbitrarilly large rates
+ - Remove 0-length branches. 
+
 ```{r}
 # How many branches with length 0?
 nrow(treedata[which(treedata$branch.length==0),])
@@ -429,18 +433,62 @@ table(treedata[which(treedata$branch.length==0),]$node_type)
 # How many births/deaths are there on branches of length 0?
 sum(treedata[which(treedata$branch.length==0),]$births.x)
 sum(treedata[which(treedata$branch.length==0),]$deaths.x)
-```
 
-There are few births/deaths on 0-length branches, these are ignored. The alternative - estimating rates with the assigned minimal values - seems more problematic because this would result in arbitrarily huge rates. 
-```{r}
+# Add minimal value to 0-length branches
+treedata <- treedata %>%
+  mutate(
+    # handle zero or non-positive branch lengths
+    branch_length_adj = ifelse(is.na(branch.length) | branch.length <= 0,
+                               min(branch.length[branch.length>0], na.rm=TRUE) * 1e-8,
+                               branch.length)
+  )
+
+# There are few births/deaths on 0-length branches, so we chose option 2 and remove them. 
+
 treedata_no0 <- subset(treedata, branch.length>0)
 nrow(treedata_no0)
 ```
 
-Some basic information
+### Descriptive stats: births, branch lengths, birth rates 
 ```{r}
-# Distributions of birth and death rates
-ggplot(treedata, aes(x=isTip, y=birthrate.5)) + geom_boxplot() + theme_bw()
+# Distribution of births
+treedata$Branch <- rep("Internal", nrow(treedata))
+treedata$Branch[treedata$isTip] <- "Terminal"
+
+panelA <- ggplot(treedata, aes(births.x, fill=Branch)) + 
+  geom_histogram(position='dodge') + 
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  xlab("Number of births") + ylab("Count") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme(
+    legend.position = c(0.8, 0.8),
+    legend.text = element_text(size = 7),
+    legend.title = element_text(size = 8),
+    legend.key.size = unit(0.4, "cm"),
+    legend.background = element_blank(),
+    legend.key = element_blank()
+  )
+
+
+# How many branches with no births?
+nrow(treedata[which(treedata$births.x==0),])
+
+
+# Branch length vs. number of births
+panelB <- ggplot(treedata, aes(x=branch.length.gw/1000, y=births.x)) + 
+  geom_point(alpha=0.2) +
+  geom_smooth() +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  xlab("Branch length") + ylab("Number of births")
+
+cor(treedata$births.x,treedata$branch.length.gw)
+
+
+# Distribution of birth rate
+panelC <- ggplot(subset(treedata_no0), aes(birthrate.5)) + geom_density() +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  xlab("Birth rate")
+
 
 # Terminal vs. internal branches
 by(treedata$birthrate.5, treedata$isTip, summary)
@@ -455,25 +503,38 @@ summary(treedata_no0$deathrate.3)
 summary(subset(treedata_no0, births.x>0))
 summary(subset(treedata_no0, deaths.x>0))
 
-ggplot(subset(treedata_no0, births.x>0), aes(birthrate.5)) +
-  geom_density() 
-
-
 ```
 
-
-
-
-
-## Birth vs. death rates
+### Birth rate vs. copy number
 ```{r}
-ggplot(treedata_no0, aes(birthrate.5, deathrate.5)) + geom_point() + geom_smooth()
-ggplot(treedata_no0, aes(birthrate.3, deathrate.3)) + geom_point() + geom_smooth()
+# Does birth rate depend on copy number?
+y_raw <- treedata$birthrate.5
+y_pos <- y_raw[is.finite(y_raw) & !is.na(y_raw) & (y_raw > 0)]
+log_min <- floor(log10(min(y_pos)))
+log_max <- ceiling(log10(max(y_pos)))
+# major breaks: 10^n
+major_breaks <- 10^(log_min:log_max)
+# minor breaks: 1..9 * 10^n (this gives the conventional minor gridlines)
+minor_breaks <- as.vector(outer(1:9, 10^(log_min:log_max), `*`))
+# keep only minor breaks within the data range
+minor_breaks <- minor_breaks[minor_breaks >= min(y_pos) & minor_breaks <= max(y_pos)]
+  
+x_levels <- levels(as.factor(treedata$copy_number))
 
-# Ratio birth/death
-ggplot(treedata_no0, aes(birthrate.5/deathrate.5)) + geom_histogram()
+treedata_no7 <- subset(treedata, !(lineage %in% removelineage))
 
-ggplot(treedata_no0, aes(birthrate.3/deathrate.3)) + geom_histogram()
+panelD <- ggplot(na.omit(treedata), aes(as.factor(copy_number), birthrate.5)) + 
+  geom_boxplot(outlier.size = 0.3) + facet_wrap(~lineage) +
+  xlab("Copy number") + ylab("IS6110 birth rate") + 
+  scale_x_discrete(
+    labels = ifelse(seq_along(x_levels) %% 5 == 1, x_levels, "")) + 
+  scale_y_log10(breaks = major_breaks,minor_breaks = minor_breaks)+ 
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  scale_y_log10()
+
+upper <- cowplot::plot_grid(panelA, panelB, labels=c('A','B'), nrow=1)
+cowplot::plot_grid(upper, panelD, nrow=2, labels=c("","C"), rel_heights=c(1,2))
+ggsave("figures/supplement/figS6.cn_vs_birthrate.observed.png", width = 15, height = 18, units = "cm", dpi=300) 
 ```
 
 
@@ -502,6 +563,10 @@ summary(treedata)
 removelineage = which(table(treedata$lineage) < 100)
 removelineage <- c(removelineage, c('L7', 'L9', 'LaX'))
 
+# Remove highly imbalances lineages
+removelineage <- c(removelineage, c('La1', 'La2', 'La3'))
+
+
 treedata_no0 <- treedata_no0 %>%
   mutate(
     parent = as.factor(parent.x),
@@ -511,15 +576,8 @@ treedata_no0 <- treedata_no0 %>%
   )
 
 
-# Plot response variable
+# Plot response variable: zero inflation!
 ggplot(treedata_no0, aes(birthrate.5)) + geom_histogram()
-ggplot(treedata_no0, aes(birthrate.3)) + geom_histogram() + scale_x_log10()
-
-fig4a <- ggplot(treedata_no0, aes(birthrate.5)) + geom_histogram() + scale_x_log10() +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
-  xlab('IS6110 birth rate (log scale)') + ylab('Count')
-
-fig4a
 
 
 # Create smaller dataset with variables used
@@ -530,21 +588,22 @@ summary(treedata_sub)
 treedata_sub$births <- as.integer(treedata_sub$births.x)
 treedata_sub$deaths <- as.integer(treedata_sub$deaths.x)
 
-# Protect against log(0) when using offset model (not necessary when removing 0-length branches)
-#treedata_sub$branch_length2 <- pmax(treedata_sub$branch.length, 1e-6)
-
 # Log branch length for offset
 treedata_sub$log_branch_length <- log(treedata_sub$branch.length.gw)
+
+# Log parent CN
+treedata_sub$log_parent_CN <- log(treedata_sub$parent_CN)
 ```
 
-## GLMM
+## Fit GLMM
 Compare n models:
   - m1: glmm with parent node as random effect
   - m2: glmm with independent slopes and intercepts for lineages
   - m3: m2 with additional accounting for zero inflation
   - m4: m2 with splines for copy  number
+  - m5: fit power law with log(parent_CN) as predictor
 
-### Birth
+
 ```{r}
 library(glmmTMB)
 library(ggeffects)
@@ -584,7 +643,7 @@ m2b <- glmmTMB(
 summary(m2b)
 
 
-# Correct for zero inflation? Not necessary when using negbinom2...
+# ADditionally correct for zero inflation
 m3 <- glmmTMB(
   births ~ parent_CN + node_type + 
     (1 + parent_CN | lineage) + 
@@ -607,15 +666,30 @@ m4 <- glmmTMB(
 )
 summary(m4)
 
-# Fit power law
+
+# Fit power law with log(parent_CN) as predictor
 m5 <- glmmTMB(
-  births ~ log(parent_CN + 1) + node_type +
-    (1 + log(parent_CN + 1) | lineage) +
+  births ~ log(parent_CN) + node_type +
+    (1 + log(parent_CN) | lineage) +
     (1 | parent) +
     offset(log_branch_length),
   family = nbinom2(),
   data = treedata_sub
 )
+summary(m5)
+
+# Add interaction term
+m5_interact <- glmmTMB(
+  births ~ log(parent_CN) * node_type +
+    (1 + log(parent_CN) | lineage) +
+    (1 | parent) +
+    offset(log_branch_length),
+  family = nbinom2(),
+  data   = treedata_sub
+)
+
+summary(m5_interact)
+AIC(m5, m5_interact)
 
 m5_nodevar_nocor <- glmmTMB(
   births ~ log(parent_CN + 1) + node_type +
@@ -635,14 +709,120 @@ anova(m2,m5)
 ```
 
 
-## Figure: effect sizes
+### Figure: main effect sizes
+Copy number effect, with births per substitution per genome. 
+Main figure: lineage-averaged effect for both internal and external branches
+Supplement: 
 
-### Estimate rate from model
-To compare to the rates from Tanaka et al. 2004
+```{r}
+pred_df <- expand.grid(
+  parent_CN         = 1:35,
+  node_type         = c("internal", "terminal"),
+  log_branch_length = 0,
+  lineage           = unique(treedata_sub$lineage),
+  parent            = NA
+)
+
+pred_link <- predict(
+  m5,
+  newdata = pred_df,
+  type    = "link",
+  re.form = NULL,  # include all random effects; parent=NA marginalises over parent RE
+  se.fit  = FALSE  # se.fit not supported with re.form=NULL in glmmTMB
+)
+
+pred_df <- pred_df %>%
+  mutate(fit = exp(pred_link))
+
+
+# Population-level predictions for the main lines
+pred_pop <- expand.grid(
+  parent_CN         = 1:35,
+  node_type         = c("internal", "terminal"),
+  log_branch_length = 0,
+  lineage           = NA,
+  parent            = NA
+)
+
+pred_pop_link <- predict(
+  m5,
+  newdata = pred_pop,
+  type    = "link",
+  re.form = NA,
+  se.fit  = TRUE
+)
+
+pred_pop <- pred_pop %>%
+  mutate(
+    fit = exp(pred_pop_link$fit),
+    lwr = exp(pred_pop_link$fit - 1.96 * pred_pop_link$se.fit),
+    upr = exp(pred_pop_link$fit + 1.96 * pred_pop_link$se.fit)
+  )
+
+
+fig4 <- ggplot() +
+  geom_line(
+    data = pred_pop,
+    aes(x = parent_CN, y = fit, colour = node_type) ) +
+  geom_ribbon(
+    data = pred_pop,
+    aes(x = parent_CN, y = fit, ymin = lwr, ymax = upr, fill = node_type),
+    alpha = 0.2, colour = NA
+  ) +
+  coord_cartesian(clip = "off") +
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    x      = "IS6110 copy number",
+    y      = "Predicted IS6110 birth rate",
+    colour = "Branch type",
+    fill   = "Branch type"
+  ) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  theme(legend.position = c(0.05, 0.95), legend.justification = c("left", "top"))
+
+fig4
+
+ggsave("figures/main/figX.birth_model.png", width = 12, height = 10, units = "cm", dpi=300)
+
+```
+
+### Example effects
+Ancestral strain with 10 copies increasing to 11
+```{r}
+# Predictions at CN=10 and CN=11
+pred_rates <- data.frame(
+  parent_CN = c(10, 10, 11, 11),
+  node_type = c("internal", "terminal", "internal", "terminal"),
+  log_branch_length = 0,
+  lineage = NA,
+  parent = NA
+)
+
+pred_link <- predict(
+  m5,
+  newdata = pred_rates,
+  type = "link",
+  re.form = NA
+)
+
+pred_rates$fit <- exp(pred_link)
+
+pred_rates %>%
+  mutate(
+    CN_label = parent_CN,
+    rate = round(fit, 5)
+  ) %>%
+  select(CN_label, node_type, rate)
+```
+
+
+### Per-element rates
+Get the per-copy rate for internal and terminal branches.
 ```{r}
 library(dplyr)
 
-# Create a prediction dataset from your observed data
+# Create a prediction dataset from observed data
 pred_dat <- treedata_sub %>%
   mutate(
     branch_length = exp(log_branch_length)
@@ -667,18 +847,27 @@ pred_dat <- pred_dat %>%
 pred_dat <- pred_dat %>% filter(parent_CN > 0)
 
 # Plot distributions
-ggplot(pred_dat, aes(rate_per_element, col=node_type)) + geom_density()
+ggplot(pred_dat, aes(node_type,rate_per_element)) + geom_violin(fill="#1B9E77FF") +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10)
 
 
 avg_rates <- pred_dat %>%
   group_by(node_type) %>%
   summarise(
     mean_rate = mean(rate_per_element),
-    median_rate = median(rate_per_element)
+    median_rate = median(rate_per_element),
+    sd_rate = sd(rate_per_element),
+    se_rate = sd(rate_per_element) / sqrt(n()),
+    n = n(),
+    q25 = quantile(rate_per_element, 0.25),
+    q75 = quantile(rate_per_element, 0.75),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    ci_lower = mean_rate - 1.96 * se_rate,
+    ci_upper = mean_rate + 1.96 * se_rate
   )
-
 avg_rates
-
 
 avg_rates_weighted <- pred_dat %>%
   group_by(node_type) %>%
@@ -692,8 +881,10 @@ avg_rates_weighted
 
 ```
 
-Compare rates
+
+How does this compare to Tanaka's transposition rate estimates?
 ```{r}
+
 weighted_rate_terminal <- avg_rates_weighted$weighted_rate[2]
 mean_CN <- mean(treedata_sub$parent_CN)
 
@@ -717,217 +908,95 @@ results <- expand.grid(
 
 results
 
-
-
-
-```
-
-
-
-### Example effects
-
-```{r}
-beta <- fixef(m5)$cond["log(parent_CN + 1)"]
-
-# Function to get ratio
-rr_cn <- function(c, beta) {
-  ((c + 2) / (c + 1))^beta
-}
-
-# Confidence intervals
-se <- sqrt(vcov(m5)$cond["log(parent_CN + 1)",
-                         "log(parent_CN + 1)"])
-
-# Wald for  CI
-beta_ci <- beta + c(-1, 1) * 1.96 * se
-
-# CI rate ratios
-rr_ci <- function(c, beta_ci) {
-  ((c + 2) / (c + 1))^beta_ci
-}
-
-rr_5_6  <- rr_cn(5, beta)
-rr_5_6_ci  <- rr_ci(5, beta_ci)
-
-rr_20_21 <- rr_cn(20, beta)
-rr_20_21_ci <- rr_ci(20, beta_ci)
-
-rr_30_31  <- rr_cn(30, beta)
-rr_30_31_ci  <- rr_ci(30, beta_ci)
-```
-
-
-
-
-### Birth rate vs. copy number
-```{r}
-# Does birth rate depend on copy number?
-y_raw <- treedata$birthrate.5
-y_pos <- y_raw[is.finite(y_raw) & !is.na(y_raw) & (y_raw > 0)]
-log_min <- floor(log10(min(y_pos)))
-log_max <- ceiling(log10(max(y_pos)))
-# major breaks: 10^n
-major_breaks <- 10^(log_min:log_max)
-# minor breaks: 1..9 * 10^n (this gives the conventional minor gridlines)
-minor_breaks <- as.vector(outer(1:9, 10^(log_min:log_max), `*`))
-# keep only minor breaks within the data range
-minor_breaks <- minor_breaks[minor_breaks >= min(y_pos) & minor_breaks <= max(y_pos)]
-  
-x_levels <- levels(as.factor(treedata$copy_number))
-
-treedata_no7 <- subset(treedata, !(lineage %in% removelineage))
-
-figSx <- ggplot(na.omit(treedata_no7), aes(as.factor(copy_number), birthrate.5)) + 
-  geom_boxplot(outlier.size = 0.3) + facet_wrap(~lineage) +
-  xlab("Copy number") + ylab("IS6110 birth rate") + 
-  scale_x_discrete(
-    labels = ifelse(seq_along(x_levels) %% 5 == 1, x_levels, "")) + 
-  scale_y_log10(breaks = major_breaks,minor_breaks = minor_breaks)+ 
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
-  scale_y_log10()
-
-ggsave("figures/supplement/figSx.cn_vs_birthrate.observed.png", figSx,width = 20, height = 18, units = "cm", dpi=300) 
-```
-
-
-### Copy number effect
-```{r}
-library(ggeffects)
-
-cn_pop <- ggpredict(
-  m5,
-  terms = "parent_CN",
-  type = "fixed", bias_correction = TRUE,
-  condition = list(log_branch_length = 0))
-
-
-ggplot(cn_pop, aes(x = x, y = predicted)) +
-  geom_line(col='blue',size = 1) +
-  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2, fill = "blue") +
-  labs(x = "Copy number", y = "Expected IS6110 birth rate") +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
-  scale_y_log10()
+ggplot(results, aes(rate_per_copy_per_gen, clock)) +
+  geom_point() +
+  facet_wrap(~gen_yr) + scale_x_log10()
 
 ```
 
-Add lineage slopes and intercepts
+
+
+
+### Supplementary figure: lineage effect
 ```{r}
 library(ggrepel)
+library(reshape2)
 
-# Add lineage slopes and intercepts
-CN_seq <- seq(
-  min(treedata_sub$parent_CN),
-  max(treedata_sub$parent_CN),
-  length.out = 100
-)
-
-newdat <- expand.grid(
-  parent_CN = CN_seq,
-  lineage = unique(treedata_sub$lineage),
-  node_type = "internal",      # fix covariates
-  parent = NA,
-  log_branch_length = 1
-)
-
-newdat$predicted <- predict(
-  m5,
-  newdata = newdat,
-  type = "response",
-  re.form = NULL
-)
-
-library(dplyr)
-
-line_labels <- newdat %>%
+# Get label positions at max CN per lineage, for internal branches only
+line_labels <- pred_df %>%
   group_by(lineage) %>%
   slice_max(parent_CN, n = 1)
 
-panelC <- ggplot() +
+
+panelA <- ggplot() +
   geom_line(
-    data = cn_pop,
-    aes(x = x, y = predicted),
-    linewidth = 1
+    data = pred_df,
+    aes(x = parent_CN, y = fit,  group = interaction(lineage, node_type)),
+    linetype = "dashed", alpha = 0.5, linewidth = 0.5
   ) +
   geom_ribbon(
-    data = cn_pop,
-    aes(x = x, ymin = conf.low, ymax = conf.high),
-    alpha = 0.2
+    data = pred_pop,
+    aes(x = parent_CN, y = fit, ymin = lwr, ymax = upr),
+    alpha = 0.2, colour = NA
   ) +
   geom_line(
-    data = newdat,
-    aes(x = parent_CN, y = predicted, group = lineage),
-    linetype = "dashed",
-    alpha = 0.6
+    data = pred_pop,
+    aes(x = parent_CN, y = fit),
+    linewidth = 1
   ) +
-  #geom_text_repel(
-  #data = line_labels,
-  #aes(x = parent_CN, y = predicted, label = lineage),
-  #direction = "y",
-  #hjust = 0,
-  #segment.size = 0.2,
-  #size = 3
-  #) +
-  labs(
-    x = "Copy number",
-    y = "Predicted IS6110 birth rate"
+  facet_wrap(~node_type) +
+  geom_text_repel(
+    data = line_labels,
+    aes(x = parent_CN, y = fit, label = lineage),
+    direction   = "y",
+    hjust       = 0,
+    nudge_x     = 1,
+    segment.size = 0.2,
+    size        = 3
   ) +
-  scale_y_log10() +
   coord_cartesian(clip = "off") +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12)
+  scale_colour_brewer(palette = "Dark2") +
+  scale_fill_brewer(palette = "Dark2") +
+  labs(
+    x      = "IS6110 copy number",
+    y      = "Predicted IS6110 birth rate\n(births per substitution per genome)",
+    colour = "Branch type",
+    fill   = "Branch type"
+  ) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10) +
+  theme(legend.position = c(0.05, 0.95), legend.justification = c("left", "top"))
 
-panelC
+panelA
 
-```
-
-
-Lineage slope vs intercept
-```{r}
-
-re <- ranef(m2)$cond$lineage
+# Correlation between random lineage slope and intercept
+re <- ranef(m5)$cond$lineage
 re$lineage <- rownames(re)
 
-fixef_CN <- fixef(m2)$cond["parent_CN"]
-fixef_IC <- fixef(m2)$cond["(Intercept)"]
-
-re$slope <- fixef_CN + re$parent_CN
-head(re)
-
+fixef_CN <- fixef(m5)$cond["log(parent_CN)"]
+fixef_IC <- fixef(m5)$cond["(Intercept)"]
+re$intercept <- fixef_IC + re$`(Intercept)`
+re$slope     <- fixef_CN + re$`log(parent_CN)`
 
 
-re <- ranef(m2)$cond$lineage
-ggplot(re, aes(`(Intercept)`, parent_CN)) +
+panelB <- ggplot(re, aes(slope, intercept)) +
   geom_point() +
   geom_smooth(method = "lm", se = FALSE) +
   labs(
-    x = "Lineage intercept (baseline birth rate)",
-    y = "Lineage CN slope"
+    y = "Lineage intercept (baseline birth rate)",
+    x = "Lineage CN slope"
   ) +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12)
-```
+  geom_text_repel(
+    data = re,
+    aes(slope, intercept, label = lineage)) +
+  theme_bw(base_family = "CMU Sans Serif", base_size = 10)
 
+cowplot::plot_grid(panelA, panelB, nrow=2, labels=c('A', 'C'))
 
-### Branch type
-```{r}
-p_node <- ggpredict(
-  m5,
-  terms = "node_type",
-  type = "fixed", bias_correction = TRUE,
-  condition = list(log_branch_length = 0))
-
-panelD <- ggplot(p_node, aes(x, predicted)) +
-  geom_point(size = 3) +
-  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.15) +
-  xlab("Node type") + 
-  ylab("Predicted IS6110 birth rate") +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12)
-
-panelD
-
-
+ggsave("figures/supplement/figS7.lineage_effect.png", width = 12, height = 12, units = "cm", dpi=300)
 
 ```
 
-Combine panels
+
 ```{r}
 lower <- cowplot::plot_grid(panelC,panelD, nrow=1, labels=c('C', 'D'), label_fontfamily = 'CMU Sans Serif')
 
@@ -935,354 +1004,17 @@ lower <- cowplot::plot_grid(panelC,panelD, nrow=1, labels=c('C', 'D'), label_fon
 cowplot::plot_grid(upper, lower, nrow=2)
 
 ggsave("figures/main/fig3.diversity_AND_birth_rate_model.png", width = 23, height = 20, units = "cm", dpi=300)
-
-
-
-```
-
-## Per-copy birth rate
-```{r}
-library(ggeffects)
-library(dplyr)
-
-# Create prediction grid: vary node_type, fix CN at representative values
-pred_dat <- expand.grid(
-  parent_CN   = seq(1, max(treedata_sub$parent_CN), by = 1),
-  node_type   = c("internal", "terminal"),
-  parent      = NA,                    # marginalise over random effect
-  log_branch_length = 0                # offset = 0 → predict per unit branch length
-)
-
-pred_dat$predicted_births <- predict(
-  m5,
-  newdata  = pred_dat,
-  type     = "response",
-  re.form  = NA                        # population-level (fixed effects only)
-)
-
-# Per-copy rate = predicted births per unit branch length / CN
-pred_dat <- pred_dat %>%
-  mutate(per_copy_rate = predicted_births / parent_CN)
-
-# Summarise: e.g. median per-copy rate at each CN, by node type
-pred_dat %>%
-  group_by(node_type) %>%
-  summarise(
-    median_per_copy_rate = median(per_copy_rate),
-    mean_per_copy_rate   = mean(per_copy_rate)
-  )
-
-exp(fixef(m5)$cond["node_typeterminal"])
-
-p <- ggpredict(
-  m5,
-  terms = c("parent_CN", "node_type"),
-  type  = "fixed",
-  bias_correction = TRUE,
-  condition = list(log_branch_length = 0)
-)
-
-# Convert to per-copy
-as.data.frame(p) %>%
-  mutate(
-    per_copy          = predicted / x,
-    per_copy_low      = conf.low  / x,
-    per_copy_high     = conf.high / x
-  )
-
-
-
-```
-
-Visualize
-```{r}
-beta0 <- fixef(m5)$cond["(Intercept)"]
-beta1 <- fixef(m5)$cond["log(parent_CN + 1)"]
-
-cn_seq <- 1:max(treedata_sub$parent_CN)
-
-analytical_df <- data.frame(
-  CN = cn_seq,
-  per_copy_rate = exp(beta0) * (cn_seq + 1)^beta1 / cn_seq
-)
-
-ggplot(analytical_df, aes(x = CN, y = per_copy_rate)) +
-  geom_line(linewidth = 1) +
-  scale_y_log10() +
-  labs(
-    x = "IS6110 copy number",
-    y = "Per-copy IS6110 birth rate (log scale)"
-  ) +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12)
-```
-
-
-```{r}
-# What is beta1 actually?
-fixef(m5)$cond
-
-# Does the within-lineage relationship look declining?
-treedata_sub %>%
-  filter(parent_CN > 0, births.x > 0) %>%
-  group_by(lineage, parent_CN) %>%
-  summarise(mean_rate = mean(birthrate.5)) %>%
-  ggplot(aes(parent_CN, mean_rate)) +
-    geom_point() + geom_smooth() +
-    facet_wrap(~lineage, scales = "free") +
-    scale_y_log10() +
-    theme_bw()
-```
-
-# Test non-linear effect of CN
-```{r}
-treedata_l = subset(treedata, branch.length>0 & lineage %in% c('L4'))
-treedata_l$log_branch_length <- log(treedata_l$branch.length.gw)
-
-treedata_l <- treedata_l %>%
-  mutate(
-    parent = as.factor(parent.x),
-    node_type = as.factor(node_type)
-  )
-treedata_l$births <- as.integer(treedata_l$births.x)
-
-# Fit models
-m2_l24 <- glmmTMB(
-  births ~ parent_CN + node_type + 
-    (1 | parent) + 
-    offset(log_branch_length),
-  data = treedata_l,
-  family = nbinom2(link="log")
-)
-
-m2_l24_splines_df4 <- glmmTMB(
-  births ~ ns(parent_CN, df = 4) + node_type + 
-    (1 | parent) +
-    offset(log_branch_length),
-  data = treedata_l,
-  family = nbinom2(link="log")
-)
-
-m2_l24_splines_df8 <- glmmTMB(
-  births ~ ns(parent_CN, df = 8) + node_type + 
-    (1 | parent.x) + 
-    offset(log_branch_length),
-    data = treedata_l,
-  family = nbinom2(link="log")
-)
-
-AIC(m2_l24, m2_l24_splines_df4, m2_l24_splines_df8)
-
-summary(m2_l24_splines_df4)
-
-```
-
-## Visualize!
-```{r}
-cn_splines <- ggpredict(
-  m2_l24_splines_df4,
-  terms="parent_CN [all]",
-  type = "fixed", bias_correction = TRUE,
-  condition = list(log_branch_length = 0))
-
-
-# Use exposure that penalizes short branch lengths, as in the glm below 
-library(dplyr)
-
-observed_rates <- treedata_l %>%
-  group_by(parent_CN) %>%
-  summarise(
-    total_births = sum(births),
-    total_exposure = sum(branch.length.gw),
-    rate = total_births / total_exposure,
-    n_branches = n()
-  )
-
-
-# Combine with observed patterns!
-fig4d <- ggplot() +
-  geom_line(
-    data=cn_splines, 
-    aes(x = x, y = predicted), size = 1
-    ) +
-  geom_ribbon(
-    data=cn_splines,
-    aes(x = x, y = predicted, ymin = conf.low, ymax = conf.high), alpha = 0.2
-    ) +
-  geom_point(
-    data = observed_rates,
-    aes(x = parent_CN, y = rate, size = n_branches),
-    color = "black", alpha = 0.5
-  ) +
-  geom_jitter(
-    data=treedata_l, 
-    aes(parent_CN, birthrate.5), alpha=0.2
-    ) +
-  xlab("Copy number") + ylab("Predicted IS6110 birth rate") + 
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
-  scale_y_log10()
-
-fig4d
-
 ```
 
 
 
 
 
-
-
-
+## Get beta value for the niche constraints model
 ```{r}
-dat_l4 <- subset(treedata_sub, lineage == "L4")
-
-# full linear predictor (log scale)
-eta <- predict(m2_l24_splines_df4, type = "link")
-
-# design matrix
-X <- model.matrix(
-  delete.response(terms(m2_l24_splines_df4)),
-  data = dat_l4
-)
-
-# spline columns
-spline_cols <- grep("^ns\\(parent_CN", colnames(X))
-
-beta <- fixef(m2_l24_splines_df4)$cond
-spline_lp <- as.numeric(X[, spline_cols] %*% beta[spline_cols])
-
-# Pearson residuals
-resid_p <- residuals(m2_l24_splines_df4, type = "pearson")
-
-partial_resid <- spline_lp + resid_p
-
-pr_df <- data.frame(
-  parent_CN = dat_l4$parent_CN,
-  partial_resid = partial_resid
-)
-
-
-
-
-
-cn_splines <- ggpredict(
-  m2_l24_splines_df4,
-  terms = "parent_CN [all]",
-  type = "fixed",
-  back.transform = FALSE,
-  condition = list(log_branch_length = 0)
-)
-
-
-ggplot(pr_df, aes(x = parent_CN, y = partial_resid)) +
-  geom_point(
-    alpha = 0.15,
-    size = 1,
-    position = position_jitter(width = 0.15, height = 0)
-  ) +
-  geom_line(
-    data = cn_splines,
-    aes(x = x, y = predicted),
-    linewidth = 1.2
-  ) +
-  geom_ribbon(
-    data = cn_splines,
-    aes(x = x, y = predicted, ymin = conf.low, ymax = conf.high),
-    alpha = 0.25
-  ) +
-  scale_x_continuous(
-    breaks = seq(0, 22, by = 2),
-    limits = c(-0.5, 22.5)
-  ) +
-  labs(
-    x = "IS6110 copy number (Lineage 4)",
-    y = "Partial residual (log birth rate)"
-  ) +
-  theme_bw(base_family = "CMU Sans Serif", base_size = 12)
-
-```
-
-## Figure old: marginal effects
-```{r}
-library(ggeffects)
-library(ggplot2)
-library(patchwork)
-library(dplyr)
-
-
-# Branch length vs births
-pA <- ggplot(treedata_sub, aes(branch.length, births)) + geom_point(alpha=0.2) + geom_smooth() + theme_minimal() +
-  labs(
-    x = "Branch length",
-    y = "Number of IS6110 births"
-  )
-
-
-# Predict TE insertions across a range of parent_CN_s
-pred_parentCN <- ggeffect(fit_offset, terms = c("parent_CN"), margin = 'marginalmeans', bias_correction = TRUE)
-
-# Unscale CN for plotting
-#mean_CN <- mean(treedata_sub$parent_CN)
-#sd_CN <- sd(treedata_sub$parent_CN)
-#pred_parentCN$x_unscaled <- pred_parentCN$x * sd_CN + mean_CN
-
-# Convert predicted counts to birthrate by dividing by mean branch length and genome size to get rate per base pair
-pred_parentCN$predicted_birthrate <- pred_parentCN$predicted / mean(treedata_sub$branch_length2) / genome_size
-pred_parentCN$conf.low_birthrate <- pred_parentCN$conf.low / mean(treedata_sub$branch_length2) / genome_size
-pred_parentCN$conf.high_birthrate <- pred_parentCN$conf.high / mean(treedata_sub$branch_length2) / genome_size
-
-
-# Copy number effect
-pB <- ggplot(pred_parentCN, aes(x = x, y = predicted_birthrate)) +
-  geom_line(col='blue',size = 1) +
-  geom_ribbon(aes(ymin = conf.low_birthrate, ymax = conf.high_birthrate), alpha = 0.2, fill = "blue") +
-  labs(
-    x = "Parent node copy number",
-    y = "Expected IS6110 birth rate"
-  ) +
-  theme_minimal() 
-
-pB
-
-
-# Lineage effect
-pred_lineage <- ggeffect(fit_offset, terms = "lineage", margin = 'marginalmeans', bias_correction = TRUE)
-
-pred_lineage$predicted_birthrate <- pred_lineage$predicted / mean(treedata_sub$branch_length2) / genome_size
-pred_lineage$conf.low_birthrate <- pred_lineage$conf.low / mean(treedata_sub$branch_length2) / genome_size
-pred_lineage$conf.high_birthrate <- pred_lineage$conf.high / mean(treedata_sub$branch_length2) / genome_size
-
-pC <- ggplot(pred_lineage, aes(x = x, y = predicted_birthrate)) +
-  geom_point(size = 3, color = "darkgreen") +
-  geom_errorbar(aes(ymin = conf.low_birthrate, ymax = conf.high_birthrate), width = 0.2) +
-  labs(
-    x = "Lineage",
-    y = "Expected IS6110 birth rate"
-  ) +
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-
-
-
-pred_node <- ggeffect(fit_offset, terms = "node_type", margin = 'marginalmeans', bias_correction = TRUE)
-pred_node$predicted_birthrate <- pred_node$predicted / mean(treedata_sub$branch_length2) / genome_size
-pred_node$conf.low_birthrate <- pred_node$conf.low / mean(treedata_sub$branch_length2) / genome_size
-pred_node$conf.high_birthrate <- pred_node$conf.high / mean(treedata_sub$branch_length2) / genome_size
-
-
-
-pD <- ggplot(pred_node, aes(x = x, y = predicted_birthrate)) +
-  geom_col(fill = "orange") +
-  geom_errorbar(aes(ymin = conf.low_birthrate, ymax = conf.high_birthrate), width = 0.2) +
-  labs(
-    x = "Node type",
-    y = "Expected IS6110 birth rate"
-  ) +
-  theme_minimal()
-
-cowplot::plot_grid(pA,pB,pC,pD, nrow=2, labels=c('A', 'B', 'C', 'D'))
-
-ggsave("figures/main/fig3.birthrate.png", width = 22, height = 16, units = "cm", dpi=300)    
+beta_hat <- fixef(m5)$cond["log(parent_CN)"]
+beta_ci  <- beta_hat + c(-1, 1) * 1.96 * 
+  sqrt(vcov(m5)$cond["log(parent_CN)", "log(parent_CN)"])
 ```
 
 

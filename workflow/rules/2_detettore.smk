@@ -90,7 +90,8 @@ rule ancestral_state_reconstruction:
 rule summarize_hotspots:
     input: 
         tree = outdir + '/phylogeny/snp_alignment.rooted.treefile',
-        reference_insertions = outdir + '/detettore/ALL_reference_insertions.tsv'
+        matrix5 = outdir + '/detettore/ALL_presence-absence.5prime.tsv',
+        matrix_meta = outdir + '/detettore/ALL_presence-absence.metadata.tsv'
     output:
         hotspot_summary = outdir + '/detettore/hotspot_summary.tsv'
     conda: '../envs/asr.yml'
@@ -98,14 +99,7 @@ rule summarize_hotspots:
         """
         Rscript scripts/infer_hotspots.r \
           {input.tree} \
-          {input.reference_insertions} \
+          {input.matrix5} \
+          {input.matrix_meta} \
           {output.hotspot_summary}
         """
-
-
-#rule detettore_figures:
-#    input:
-#        table = outdir + '/detettore/summaries/presence-absence.tsv',
-#        matrix = outdir + '/detettore/summaries/presence-absence.tsv', 
-#    output:
-#        pass

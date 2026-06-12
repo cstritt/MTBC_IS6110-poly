@@ -23,7 +23,7 @@ rule motif_prep:
         reference     = config['detettore']['reference']
     output:
         fg   = outdir + '/motif/foreground.fasta',
-        bg    = outdir + '/motif/background.fasta'
+        bg  = expand(outdir + '/motif/background_{i}.fasta', i=range(config.get('motif', {}).get('n_backgrounds', 10)))
     params:
         min_length = config.get('motif', {}).get('min_length', 50),
         max_length = config.get('motif', {}).get('max_length', 150),
@@ -76,19 +76,19 @@ rule motif_streme_bg:
     """Run STREME on the 5'-anchor side foreground vs. background."""
     input:
         fg      = outdir + '/motif/foreground.fasta',
-        bg      = outdir + '/motif/background.fasta'
+        bg      = outdir + '/motif/background_{i}.fasta'
     output:
-        xml = outdir + '/motif/streme_bg/streme.xml',
-        txt = outdir + '/motif/streme_bg/streme.txt'
+        xml = outdir + '/motif/streme_bg_{i}/streme.xml',
+        txt = outdir + '/motif/streme_bg_{i}/streme.txt'
     params:
-        outdir   = outdir + '/motif/streme_bg',
+        outdir   = outdir + '/motif/streme_bg_{i}',
         minw     = config.get('motif', {}).get('minw',  4),
         maxw     = config.get('motif', {}).get('maxw',  12),
         thresh   = config.get('motif', {}).get('thresh', 0.05),
         nmotifs  = config.get('motif', {}).get('nmotifs', 10),  
         extra    = config.get('motif', {}).get('streme_extra', '')
     log:
-        outdir + '/logs/motif_streme.log'
+        outdir + '/logs/motif_streme_{i}.log'
     conda:
         '../envs/motif.yaml'          # meme-suite
     shell:
@@ -106,12 +106,12 @@ rule motif_streme_bg:
         > {log} 2>&1
         """
 
-
 rule motif_parse:
-    """Parse both STREME XML outputs into a single summary TSV."""
+    """Parse all STREME XML outputs into a single summary TSV."""
     input:
-        xml = outdir + '/motif/streme/streme.xml',
-        xml_bg = outdir + '/motif/streme_bg/streme.xml'
+        xml    = outdir + '/motif/streme/streme.xml',
+        xml_bg = expand(outdir + '/motif/streme_bg_{i}/streme.xml',
+                        i=range(config.get('motif', {}).get('n_backgrounds', 10)))
     output:
         tsv = outdir + '/motif/motif_summary.tsv'
     log:
@@ -122,69 +122,42 @@ rule motif_parse:
         '../scripts/motif_parse.py'
 
 
-
-rule extract_hotspot_regions:
-    """
-    Extract FASTA sequences for hotspot and coldspot regions.
-    The regions input contains the coordinates of genic and intergenic regions in the reference genome.
-
-    """
+rule fimo_top_motif:
+    """Sensitive FIMO scan for top motif only."""
     input:
-        hotspot_summary = outdir + '/detettore/hotspot_summary.tsv',
-        reference = config['detettore']['reference'],
-        regions = config['annotations']['mtbc0_regions'] 
+        motifs = outdir + '/motif/streme_bg_0/streme.xml'
     output:
-        hotspot_seqs = outdir + '/motif/hotspot_sequences.fasta',
-        coldspot_seqs = outdir + '/motif/coldspot_sequences.fasta'
+        meme = outdir + '/motif/fimo_top_motif/top_motif.meme',
+        tsv  = outdir + '/motif/fimo_top_motif/fimo.tsv'
     params:
-        hotspot_threshold = config['motif']['hotspot_threshold'],
-        outdir = outdir + '/motif'
-    log:
-        outdir + '/logs/extract_hotspot_regions.log'
-    conda:
-        '../envs/motif.yaml'          # biopython, pandas
-    script:
-        '../scripts/extract_hotspot_regions.py'
-
-
-
-
-
-
-
-rule streme_to_meme:
-    input:
-        streme = outdir + '/motif/streme/streme.xml'
-    output:
-        meme = outdir + '/motif/streme/streme.meme'
-    conda:
-        '../envs/motif.yaml'
-    shell:
-        """
-        streme2meme {input.streme} > {output.meme}
-        """
-
-rule run_fimo_hotspots:
-    input: 
-        motifs = outdir + '/motif/streme/streme.meme',
-        hotspot_seqs = outdir + '/motif/hotspot_sequences.fasta'
-    output:
-        pass
+        outdir     = outdir + '/motif/fimo_top_motif',
+        motif_id   = config.get('motif', {}).get('top_motif_id', '1-TCTCAAAW'),
+        thresh     = config.get('motif', {}).get('fimo_thresh_sensitive', 0.001),
+        seqs       = config['annotations']['mtbc0_region_seqs']
     conda: '../envs/motif.yaml'
     shell:
         """
-        fimo --oc hotspot_fimo {input.motifs} {input.hotspot_seqs}
+        meme-get-motif -id {params.motif_id} {input.motifs} \
+            > {params.outdir}/top_motif.meme
+
+        fimo \
+            --thresh   {params.thresh} \
+            --no-qvalue \
+            --oc       {params.outdir} \
+            {params.outdir}/top_motif.meme \
+            {params.seqs}
         """
 
-rule run_fimo_coldspots:
+rule fimo:
     input: 
-        motifs = outdir + '/motif/streme/streme.meme',
-        coldspot_seqs = outdir + '/motif/coldspot_sequences.fasta'
+        motifs = outdir + '/motif/streme_bg_0/streme.xml'
     output:
-        pass
+        outdir + '/motif/fimo/fimo.tsv'
+    params: 
+        outdir = outdir + '/motif/fimo',
+        seqs = config['annotations']['mtbc0_region_seqs']
     conda: '../envs/motif.yaml'
     shell:
         """
-        fimo --oc hotspot_fimo {input.motifs} {input.coldspot_seqs}
+        fimo --oc {params.outdir} {input.motifs} {params.seqs}
         """
-

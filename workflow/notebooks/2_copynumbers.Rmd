@@ -30,7 +30,6 @@ paths <- tryCatch(
   }
 )
 
-load(paths$rdata)
 ```
 
 
@@ -38,14 +37,34 @@ load(paths$rdata)
 Number of identified uFS, site frequency spectrum.
 
 ```{r}
-# Sort insertions sites by frequency
-m_counts <- colSums(m) %>% as.data.frame()
-m_counts$ins <- rownames(m_counts)
-names(m_counts)[1] <- 'count'
-m_counts <- m_counts[order(m_counts$count, decreasing = T),]
+load(paths$rdata)
 
-ggplot(m_counts, aes(count)) + geom_histogram() + scale_x_log10() +
-  theme_bw() + xlab("Number of strains with insertion site") + ylab("Count")
+
+get_freqspec <- function(matrix){
+  m_counts <- colSums(matrix) %>% as.data.frame()
+  m_counts$ins <- rownames(m_counts)
+  names(m_counts)[1] <- 'count'
+  m_counts <- m_counts[order(m_counts$count, decreasing = T),]
+  return(m_counts)
+}
+
+sfs5 <- get_freqspec(matrix5)
+sfs3 <- get_freqspec(matrix3)
+
+sfs5$side <- rep('5', nrow(sfs5))
+sfs3$side <- rep('3', nrow(sfs3))
+
+
+sfs <- rbind(sfs5,sfs3)
+sfs$side <- factor(sfs$side, levels=c('5', '3'))
+
+
+ggplot(sfs, aes(count, fill=side)) + geom_histogram(position='dodge') + scale_x_log10() +
+  theme_bw() + xlab("Number of strains with insertion site (log scale)") + ylab("Count") +
+  scale_fill_brewer(palette='Dark2') +
+  theme_bw(base_family = "CMU Sans Serif", base_size=12)
+
+ggsave("figures/supplement/figS2.uFS_SFS.png", width = 14, height = 10, units = "cm", dpi=300)    
 
 ```
 
@@ -78,6 +97,8 @@ ggplot(copy_numbers, aes(nr_5_anchors, nr_3_anchors)) +
   theme_bw(base_family = "CMU Sans Serif", base_size = 12) +
   xlab("Five prime cFS count") + ylab("Three prime cFS count") +
   geom_density2d(col='grey80')
+
+ggsave("figures/supplement/figS3.CN_5prime_3prime.png", width = 12, height = 10, units = "cm", dpi=300)    
 
 r = cor(copy_numbers$nr_5_anchors, copy_numbers$nr_3_anchors)
 print(paste('Correlation between 5 and 3 prime cFS counts: ', r))
@@ -202,7 +223,7 @@ copy_numbers$lineage_new <- factor(copy_numbers$lineage_new, levels = c(lineage_
 
 
 
-# Replace Dassie bacillus with Db
+# Replace Dassie bacillus with DbSupplemental Table S2
 #copy_numbers$lineage[which(copy_numbers$lineage=='Dassie bacillus')] <- 'Db'
 
 

@@ -188,8 +188,6 @@ augment_genemap <- function(genemap, dejesus_path, resistance_path){
 # Add information to gene metadata: essentiality, distance to origin, resistance
 genemap = read.delim("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
 
-# Remove cds- prefix from MTBCO gene ID
-genemap$mtbc0_gene_id <- gsub('cds-', '', genemap$mtbc0_gene_id)
 
 # Add essentiality and resistance information
 genemap = augment_genemap(
@@ -204,7 +202,7 @@ head(genemap)
 
 
 # Add blast hits to matrix metadata
-```{r}
+```{r, eval=FALSE}
 matrix_metadata <- add_blast_info(matrix_metadata)
 ```
 
@@ -216,38 +214,6 @@ metadata$lineage = metadata$LINEAGE_x
 metadata$sublineage = metadata$SUBLINEAGE_x
 metadata$lineage[which(metadata$lineage=='C')] <- 'LaX'
 metadata$lineage[which(metadata$lineage=='D')] <- 'Dassie bacillus'
-
-```
-
-
-# Parse reference insertions
-- add unique positional ID position_strand
-- flag insertions where the proportion of reads NOT supporting the insertion is higher than 0.1
-- add Rv names if there is an H37Rv ortholog
-- add context category 'genic/intergenic'
-```{r}
-# Add lineage and sublineage
-refins$lineage = metadata$lineage[match(refins$strain,metadata$GNUMBER)]
-refins$sublineage = metadata$sublineage[match(refins$strain,metadata$GNUMBER)]
-
-# Nr of unique insertion sites: some sites with same position, different strand!
-refins$unique_id <- paste(refins$position, refins$strand, sep='-')
-
-# Reference support vs. 5' support + 3' support
-refsupp_threshold = 0.1
-refins$support_ref_ratio = refins$support_ref / (refins$support_5+refins$support_3)
-refins$filter <- rep('PASS', nrow(refins))
-refins$filter[which(refins$support_ref_ratio > refsupp_threshold)] <- 'FAILED'
-
-ggplot(subset(refins, support_ref_ratio > 0), aes(support_ref_ratio)) + geom_density() + theme_bw() + scale_x_log10() + geom_vline(aes(xintercept = refsupp_threshold), col='red', linetype ='dashed')
-
-# Add Rv gene names
-refins$rv_ortholog <- add_alternative_gene_names(refins$gene, genemap)
-
-# Add genic/intergenic 
-refins$context <- rep('genic', nrow(refins))
-refins$context[grepl(';', refins$gene)] <- 'intergenic'
-refins$context <- as.factor(refins$context)
 
 ```
 
@@ -319,7 +285,10 @@ mrcas
 ```
 
 # Summarize hotspots
-```{r}
+Old hotspot summary derived from individual-site ancestral states. 
+In the study, sites are aggregated by region and ancestral states are inferred per region. 
+```{r, eval=FALSE}
+
 site_summary <- read.csv('workflow/results/detettore/AS_5prime.site_summary.tsv', sep='\t')
 site_summary$site_id <- gsub("X", "", site_summary$site_id)
 
@@ -368,8 +337,6 @@ for (i in 1:nrow(refins)){
 # Clean up Rdata and save image
 ```{r}
 rm(singles, row, md_l, ua_asr, ua_meta)
-rm(site_summary)
-rm(dfrow)
 rm(paths)
 save.image('is6110.RData')
 ```

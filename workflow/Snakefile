@@ -1,18 +1,23 @@
-include: 'rules/mise_en_place.smk'
-#include: 'rules/get_git_repos.smk'
+include: 'rules/0_mise_en_place.smk'
+#include: 'rules/0_get_git_repos.smk'
 
-#include: 'rules/annotate_IS.smk'
-#include: 'rules/benchmark_detettore.smk'
+#include: 'rules/1_benchmark_detettore.smk'
+#include: 'rules/2_phylogeny.smk'
+#include: 'rules/2_detettore.smk'
+include: 'rules/4_motif_enrichment.smk'
+#include: 'rules/5_niche_model.smk'
+#include: 'rules/9_figures_n_stats.smk'
 
-#include: 'rules/snp_alignment.smk'
-#include: 'rules/phylogeny.smk'
-#include: 'rules/detettore.smk'
-
-include: 'rules/motif_enrichment.smk'
-
-#include: 'rules/niche_model.smk'
-
-#include: 'rules/figures_n_stats.smk'
+rule explore:
+    input:
+        outdir + '/motif/fimo/fimo.tsv',
+        outdir + '/motif/fimo_top_motif/fimo.tsv',
+        expand(outdir + '/motif/streme_bg_{i}/streme.xml',
+               i=range(config.get('motif', {}).get('n_backgrounds', 10))),
+        outdir + '/motif/motif_summary.tsv'
+        #outdir + '/niche_model/abc_params.tsv',
+        #outdir + '/niche_model/abc_summaries.tsv',
+        #outdir + '/is6110.RData'
 
 rule main:
     input:
@@ -21,44 +26,5 @@ rule main:
         outdir + '/3_birthdeath.html',
         outdir + '/4_nichespace.html',
         outdir + '/5_nichemodel.html'
-
-
-rule main_old:
-    input:
-        # phylogeny
-        outdir + '/alignment/snp_alignment.fasta',
-        outdir + '/phylogeny/nj_tree.rooted.nex',
-        outdir + '/phylogeny/snp_alignment.rooted.treefile',
-        # detettore6110
-        expand(outdir + '/detettore/{gsubdir}/{gnr}.reference_insertions.tsv', zip, gsubdir=detettore_gnr_subdirs, gnr=gnrs.keys()),
-        expand(outdir + '/detettore/{gsubdir}/{gnr}.anchors.tsv', zip, gsubdir=detettore_gnr_subdirs, gnr=gnrs.keys()),
-        outdir + '/detettore/ALL_anchors.tsv',
-        outdir + '/detettore/ALL_reference_insertions.tsv',
-        outdir + '/detettore/ALL_reference_insertions.vcf',
-        outdir + '/detettore/AS_5prime.ancestral_likelihoods.tsv',
-        outdir + '/detettore/AS_3prime.ancestral_likelihoods.tsv',
-        outdir + '/detettore/anchor_map.tsv',
-        # motif analysis
-        outdir + '/motif/motif_summary.tsv', 
-        # niche model
-        outdir + '/niche_model/abc_params.tsv',
-        outdir + '/niche_model/abc_summaries.tsv',
-
-rule benchmarking:
-    input: 
-        #summary = outdir_bm + '/benchmarking/summary.html',
-        minigraph_pangenome = outdir_bm + '/benchmarking/minigraph/pangenomegraph.gfa',
-        assembly_paths = expand(outdir_bm + '/benchmarking/minigraph/{assembly}.bed', assembly=assemblies.keys()),
-        call_bubbles = outdir_bm + '/benchmarking/minigraph/bubbles.bed'
-
-rule detettore_only:
-    input:
-        expand(outdir + '/detettore/{gsubdir}/{gnr}.reference_insertions.tsv', zip, gsubdir=detettore_gnr_subdirs, gnr=gnrs.keys()),
-        expand(outdir + '/detettore/{gsubdir}/{gnr}.anchors.tsv', zip, gsubdir=detettore_gnr_subdirs, gnr=gnrs.keys()),
-        outdir + '/detettore/ALL_anchors.tsv',
-        outdir + '/detettore/ALL_reference_insertions.tsv',
-        outdir + '/detettore/ALL_reference_insertions.vcf',
-        outdir + '/detettore/anchor_map.tsv'
-
-            
+           
 localrules: clone_detettore, clone_lva

@@ -1,105 +1,100 @@
-"""
-scripts/motif_parse.py
-======================
-Snakemake script — called by rule motif_parse.
-
-Parses STREME XML output for both the 5' and 3' anchor sides and writes a
-single summary TSV with one row per discovered motif.
-
-Output columns
---------------
-side                  5prime / 3prime
-motif_id              STREME motif identifier (e.g. 1-ACGT)
-consensus             IUPAC consensus string (alt attribute in XML)
-width                 motif width (bp)
-log10_pvalue          log10(p-value) from discriminative test (negative = significant)
-pvalue                raw p-value
-train_pos_count       foreground sequences containing the motif
-train_neg_count       background sequences containing the motif
-dtc                   discriminative total count
-score_threshold       position-weight-matrix score threshold used
-"""
-
 import xml.etree.ElementTree as ET
+import numpy as np
 import pandas as pd
+from scipy.cluster.hierarchy import linkage, fcluster
+from scipy.spatial.distance import pdist
 
-log_path = str(snakemake.log[0])
-log_fh   = open(log_path, "w")
-
-def log(msg):
-    log_fh.write(msg + "\n")
-    log_fh.flush()
-
-
-def parse_streme_xml(xml_path):
-    """
-    Parse a STREME streme.xml file.
-    Returns a list of dicts, one per motif.
-    """
-    log(f"[parse] {xml_path}  ")
+def parse_motif_pwm(xml_path):
+    """Extract all motifs and their PWMs from a STREME XML file."""
     tree = ET.parse(xml_path)
     root = tree.getroot()
-
     motifs = []
     for motif in root.iter("motif"):
-        a = motif.attrib
-
-        # p-value: STREME reports train_log10pvalue (negative, more negative = better)
-        raw_log10p = a.get("train_log10pvalue", "NA")
-        try:
-            log10p = float(raw_log10p)
-        except ValueError:
-            log10p = float("nan")
-
-        raw_p = a.get("train_pvalue", "NA")
-        try:
-            pval = float(raw_p)
-        except ValueError:
-            pval = float("nan")
-
+        pwm = []
+        for pos in motif:
+            if pos.tag == "pos":
+                pwm.append([float(pos.get("A")), float(pos.get("C")),
+                            float(pos.get("G")), float(pos.get("T"))])
         motifs.append({
-            "motif_id":         a.get("id",                  ""),
-            "consensus":        a.get("alt",                 ""),   # IUPAC-like
-            "width":            a.get("width",               ""),
-            "log10_pvalue":     log10p,
-            "pvalue":           pval,
-            "train_pos_count":  a.get("train_pos_count",     ""),
-            "train_neg_count":  a.get("train_neg_count",     ""),
-            "dtc":              a.get("train_dtc",           ""),
-            "score_threshold":  a.get("score_threshold",     ""),
+            "id":        motif.get("id"),
+            "consensus": motif.get("alt"),
+            "width":     int(motif.get("width")),
+            "pvalue":    float(motif.get("train_pvalue")),
+            "pwm":       np.array(pwm)   # shape (width, 4)
         })
-
-    log(f"[parse] found {len(motifs)} motifs")
     return motifs
 
+def pwm_distance(pwm_a, pwm_b):
+    """
+    Compute minimum Euclidean distance between two PWMs,
+    allowing for offset alignment and reverse complement.
+    Returns the minimum distance across all alignments.
+    """
+    def rc_pwm(pwm):
+        return pwm[::-1, [3, 2, 1, 0]]   # reverse rows, swap A<->T C<->G
 
-log("=== motif_parse.py starting ===")
+    def align_distance(a, b):
+        # Slide shorter over longer, return minimum column-wise RMSE
+        if len(a) > len(b):
+            a, b = b, a
+        w = len(a)
+        dists = []
+        for start in range(len(b) - w + 1):
+            d = np.sqrt(np.mean((a - b[start:start+w])**2))
+            dists.append(d)
+        return min(dists)
 
-motifs = parse_streme_xml(snakemake.input.xml)
-motifs_bg = parse_streme_xml(snakemake.input.xml_bg)
+    d_fwd = align_distance(pwm_a, pwm_b)
+    d_rc  = align_distance(rc_pwm(pwm_a), pwm_b)
+    return min(d_fwd, d_rc)
 
-# Add column specificying bg or no bg model, join data frames
-for m in motifs:
-    m["test"] = 'shuffle'
-for m in motifs_bg:
-    m["test"] = 'background'
-    
-motifs.extend(motifs_bg)
+# ── Load all background XMLs ──────────────────────────────────────────────────
+all_motifs = []
+for bg_i, xml_path in enumerate(snakemake.input.xml_bg):
+    for motif in parse_motif_pwm(xml_path):
+        motif["background"] = bg_i
+        all_motifs.append(motif)
 
-if motifs:
-    df = pd.DataFrame(motifs)
-    # Sort: most significant first (most negative log10p)
-    df = df.sort_values("log10_pvalue")
-    df.to_csv(snakemake.output.tsv, sep="\t", index=False)
-    log(f"[write] {snakemake.output.tsv}  ({len(df)} motifs total)")
-else:
-    # Write empty file so Snakemake output is satisfied
-    pd.DataFrame(columns=[
-        "side", "motif_id", "consensus", "width",
-        "log10_pvalue", "pvalue",
-        "train_pos_count", "train_neg_count", "dtc", "score_threshold"
-    ]).to_csv(snakemake.output.tsv, sep="\t", index=False)
-    log("[write] no motifs found – wrote empty TSV")
 
-log("=== motif_parse.py done ===")
-log_fh.close()
+# ── Cluster motifs by PWM similarity ─────────────────────────────────────────
+# Compute pairwise distances
+n = len(all_motifs)
+dist_matrix = np.zeros((n, n))
+for i in range(n):
+    for j in range(i+1, n):
+        d = pwm_distance(all_motifs[i]["pwm"], all_motifs[j]["pwm"])
+        dist_matrix[i, j] = d
+        dist_matrix[j, i] = d
+
+# Hierarchical clustering
+Z = linkage(pdist(dist_matrix), method="average")
+labels = fcluster(Z, t=0.3, criterion="distance")   # threshold controls merging sensitivity
+
+# ── Summarise clusters ────────────────────────────────────────────────────────
+summary = []
+for cluster_id in np.unique(labels):
+    idx = np.where(labels == cluster_id)[0]
+    cluster_motifs = [all_motifs[i] for i in idx]
+
+    n_backgrounds = len(set(m["background"] for m in cluster_motifs))
+    consensuses   = [m["consensus"] for m in cluster_motifs]
+    pvalues       = [m["pvalue"]    for m in cluster_motifs]
+
+    # Average PWM (align to shortest first)
+    min_width = min(m["pwm"].shape[0] for m in cluster_motifs)
+    pwm_stack = np.stack([m["pwm"][:min_width] for m in cluster_motifs])
+    mean_pwm  = pwm_stack.mean(axis=0)
+
+    summary.append({
+        "cluster_id":     cluster_id,
+        "n_backgrounds":  n_backgrounds,        # how many of 10 runs found this motif
+        "n_motifs":       len(cluster_motifs),
+        "consensuses":    ";".join(set(consensuses)),
+        "median_pvalue":  np.median(pvalues),
+        "mean_pwm":       mean_pwm
+    })
+
+summary_df = pd.DataFrame(summary).sort_values("n_backgrounds", ascending=False)
+
+# ── Write output ──────────────────────────────────────────────────────────────
+summary_df.drop(columns="mean_pwm").to_csv(snakemake.output.tsv, sep="\t", index=False)

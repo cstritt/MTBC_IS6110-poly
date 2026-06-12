@@ -19,241 +19,391 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 paths <- tryCatch(
   {
     list(
-      branchsummary_5 = snakemake@input[[1]],
+      subtree = snakemake@input$subtree,
+      copy_numbers = snakemake@input$copy_numbers,
+      abc_params = snakemake@input$abc_params,
+      abc_summary = snakemake@input$abc_summary,
+      metadata = snakemake@params$metadata,
       output_html     = snakemake@output[[1]]
     )
   },
   error = function(e){
     list(
-      branchsummary_5 = 'workflow/results/detettore/AS_5prime.branch_summary.tsv',
-      output_html     = NULL  # or whatever default makes sense
+      subtree = "workflow/results/niche_model/subsampled_tree.rooted.nex",
+      copy_numbers = "workflow/results/detettore/ALL_copy_numbers.tsv",
+      abc_params = "workflow/results/niche_model/abc_params.tsv",
+      abc_summary = "workflow/results/niche_model/abc_summaries.tsv",
+      metadata = "metadata/10k/metadata_reduced.tsv",
+      output_html     = NULL
     )
   }
 )
 
 ```
 
-# Constrained niche model
-A simple model to explain IS copy number variation, hotspots, symmetry etc.:
-Few loci in the genome where IS can insert safely. This are hit by chance, and once hit,
-additional copies increase the birth rate. Model implemented in contrained_niche_evolution.py.
+
+# A niche constraints model for IS6110
+An evolutionary model to explain IS copy number variation, hotspots:
+Few loci in the genome where IS can insert safely. This are hit by chance, and once hit,additional copies increase the birth rate. Model implemented in niche_model.py.
 
 Use downsampled tree, e.g. 500 strains.
 
 Fit model to data using approximate Bayesian computation. Summary statistics: median CN, var(CN)_clades, ...
 Chose initial distributions according to real data (birth rate, death rate, max_number ...). 
-Fixed: initial_copies = 1, max_niches = 38
+Fixed: initial_copies = 1, L = 
 Fitted: p_lethal, r_birth, r_death
 
-p_lethal = 0.95
-r_transpose = 4000
-r_delete = 0
-max_niches = 40
-initial_copies = 1
+
+# Summary statistics
+
+Four aspects:
+
+Overall burden:	cn_*
+Population structure:	cladevar
+Hotspot behaviour:	hs_*
+Site frequency spectrum:	sfs_*
 
 
-
-## Approximate Bayesian computation
-
-Simulation test run
+## Observed summary statistics in the subtree
 ```{r}
-args <- c(
-  "workflow/scripts/niche_model.py",
-  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
-  "--p_lethal",  "0.6621324",
-  "--r_birth", "4507.4047070",
-  "--r_death", "249.1706106",
-  "--initial_copies", "1",
-  "--max_copies", "40"
-)
-
-
-stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
-cn_sim = read.delim(text=stdout, sep='\t')
-```
-
-
-Test run with the spatially explicit model
-```{r}
-args <- c(
-  "workflow/scripts/niche_model.py",
-  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
-  "--p_lethal",  "0.6621324",
-  "--r_birth", "4507.4047070",
-  "--r_death", "249.1706106",
-  "--initial_copies", "1",
-  "--max_copies", "40",
-  "--spatial",
-  "--niches", "10000"
-)
-
-
-stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
-cn_sim = read.delim(text=stdout, sep='\t')
-```
-
-
-Summary statistics
-```{r}
-
 library(ape)
-library(ggplot2)
-library(ggtree)
-library(viridis)
-library(dplyr)
 
-load('is6110.RData')
+# Load the functions
+source('workflow/scripts/sfs_functions.R')
 
-get_summary_stats <- function(copy_numbers, metadata){
-  
-  copy_numbers$lineage = metadata$lineage[match(copy_numbers[,1], metadata$GNUMBER)]
-  
-  cladevar = copy_numbers %>% 
-    group_by(lineage) %>%
-    summarize(Mean = mean(CN), SD = sd(.[[2]]))
-  
-  summdata = list(
-    'Mean' = mean(copy_numbers[,2]),
-    'SD' = sd(copy_numbers[,2]),
-    'min' = min(copy_numbers[,2]),
-    '25%' = quantile(copy_numbers[,2], 0.25),
-    '50%' = quantile(copy_numbers[,2], 0.5),
-    '75%' = quantile(copy_numbers[,2], 0.75),
-    'max' = max(copy_numbers[,2]),
-    'cladevar' = var(cladevar$Mean),
-    'cladesd' = sd(cladevar$Mean)
-  ) 
-  return(summdata)
-}
+# Compute observed summary statistics
+load('is6110.RData')  # loads matrix5 (presence/absence), metadata
 
 
-treesim = read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
-plot(treesim, show.tip.label = FALSE)
-copy_numbers_sub <- subset(copy_numbers, strain %in% tree$tip.label)
-head(copy_numbers_sub)
-stats_obs = get_summary_stats(copy_numbers_sub,metadata)
-stats_obs
+# Subset matrix to strains present in sub tree
+rownames(matrix5)
+
+treesim <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+treesim$tip.label
+
+matrix_treesim <- matrix5[treesim$tip.label,]
+matrix_treesim <- matrix_treesim[,colSums(matrix_treesim) != 0]
+
+# Get stats
+obs_stats <- get_all_summary_stats(matrix_treesim, metadata)
+print(obs_stats)
 
 ```
 
 
-## Get posterior distributions
-```{r}
-library(abc)
-library(magrittr)
 
+
+## Internal vs. terminal branches
+```{r}
+library(ape)
+library(ggtree)
+library(ggplot2)
+
+tree <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+
+tree$edge.length[1:tree$Nnode]
+
+branch_lengths <- data.frame(
+  length = tree$edge.length,
+  type = c(
+    rep('terminal', tree$Nnode),
+    rep('internal',length(tree$edge.length)-tree$Nnode)
+  )
+)
+head(branch_lengths)
+
+ggplot(branch_lengths, aes(x=type, y=length)) + geom_boxplot()
+ggplot(branch_lengths, aes(length, col=type)) + geom_density()
+
+
+branch_lengths %>%
+  group_by(type) %>%
+  summarize(
+    mean = mean(length),
+    median = median(length)
+    )
+
+```
+
+
+## Simulation results
+```{r}
+library(magrittr)
+library(ggplot2)
+library(reshape2)
 
 params_mat <- read.csv('workflow/results/niche_model/abc_params.tsv', sep='\t') %>% as.matrix()
-colnames(params_mat) <- c('p_lethal', 'r_birth', 'r_death')
+#colnames(params_mat) <- c('p_lethal', 'p_deleterious', 'r_birth', 'r_death', 'r_death_mult')
 dim(params_mat)
 summary(params_mat)
 
-
-
 summaries_mat <- read.csv('workflow/results/niche_model/abc_summaries.tsv', sep='\t') %>% as.matrix()
-colnames(summaries_mat) <- c('Mean', 'SD', 'min', '25%', '50%',  '75%', 'max', 'cladevar', 'cladesd')
 dim(summaries_mat)
+colnames(summaries_mat)
+summary(summaries_mat)
+
+# Plot distributions of all summary stats
+as.data.frame(summaries_mat) %>% melt() %>%
+  ggplot(aes(value)) + geom_density() + facet_wrap(~variable, scales='free')
+
+```
+
+
+## Find informative summary stats
+The full set of summary stats is redundant. Use random forest to find
+stats that are actuall informative.
+
+'p_essential', 'p_tolerated', 'r_birth'
+
+How are the summary stats correlated?
+```{r}
+library(ggplot2)
+library(GGally)
+
+# Plot correlogram
+panelA <- ggcorr(summaries_mat, label=TRUE)
+panelA
+```
+
+Estimate variable importance with random forests
+```{r}
+library(ranger)
+library(ggplot2)
+
+params <- c('p_essential', 'p_tolerated', 'r_birth')
+
+subsamp_n = 10000
+subsamp_i = sample(1:nrow(summaries_mat), subsamp_n)
+
+importanzia <- data.frame()
+
+for (p in params){
+
+  reference_table <- cbind(
+    p = params_mat[subsamp_i,p],
+    summaries_mat[subsamp_i,]
+  )
+
+  rf <- ranger(
+    p ~ .,
+    data = reference_table,
+    importance = "permutation",
+    num.threads=6
+  )
+  
+  imp = importance(rf)
+  
+  df <- data.frame(
+    var = rep(p, ncol(summaries_mat)),
+    stat = names(imp),
+    value = unname(imp)
+  )
+  importanzia <- rbind(importanzia, df)
+}
+
+
+# Plot variable importance
+panelB <- ggplot(importanzia, aes(y=stat, x=value)) + 
+  geom_point() + facet_wrap(~var, scales='free_x') +
+  theme_bw(base_family='CMU Sans Serif', base_size=12) + 
+  xlab("Variable importance") + ylab("")
+
+panelB
+```
+
+```{r}
+cowplot::plot_grid(panelA, panelB, nrow=2, rel_heights= c(2,1))
+```
+
+
+
+
+## Select informative core stats
+```{r}
+core_stats <- c(
+  'cn_50',           
+  'cn_max',            
+  'cladevar',
+  'hs_gini',   
+  'hs_n_top5',
+  'sfs_n_common',
+  'sfs_tajimas_d'
+)
+
+obs_stats <- obs_stats[core_stats]
+```
+
+# ABC
+```{r}
+library(abc)
+
+
+# Focus on core stats
+summaries_mat <- summaries_mat[,core_stats]
+
 
 # Run abc (rejection followed by local linear regression)
-abc_res <- abc(target = stats_obs,
+abc_res <- abc(target = obs_stats,
                param = params_mat,
                sumstat = summaries_mat,
                tol = 0.001,   # keep top 1% closest sims
                method = "neuralnet")
 
 summary(abc_res)
-abc_res
-plot(abc_res, params_mat)
-hist(abc_res)
-
-plot(density(abc_res$dist))
 
 ```
 
-Plot parameter combinations vs distance to visualize peaks
+
+# Posterior vs. prior distributions
 ```{r}
-library(plotly)
+library(tidyr)
+library(ggplot2)
 
-str(abc_res)
+posterior <- as.data.frame(abc_res$unadj.values)
+colnames(posterior) <- c('p_essential', 'p_tolerated', 'r_birth')
 
-abc_res_best = abc_res$region
+# Add prior samples for comparison
+prior <- as.data.frame(params_mat)
+colnames(prior) <- c('p_essential', 'p_tolerated', 'r_birth')
 
-abc_dists <- data.frame(
-  p_lethal =  params_mat[,'p_lethal'][abc_res_best],
-  r_birth = params_mat[,'r_birth'][abc_res_best],
-  r_death = params_mat[,'r_death'][abc_res_best],
-  p_lethal_adj = abc_res$adj.values[,'p_lethal'],
-  r_birth_adj = abc_res$adj.values[,'r_birth'],
-  r_death_adj = abc_res$adj.values[,'r_death'],
-  dist = abc_res$dist[abc_res_best]
+posterior$distribution <- 'posterior'
+prior$distribution     <- 'prior'
+
+panelA <- 
+bind_rows(posterior, prior) %>%
+  pivot_longer(-distribution, names_to='parameter', values_to='value') %>%
+  ggplot(aes(value, fill=distribution, colour=distribution)) +
+  geom_density(alpha=0.4) +
+  facet_wrap(~parameter, scales='free') +
+  scale_fill_manual(values=c(posterior='steelblue', prior='grey60')) +
+  scale_colour_manual(values=c(posterior='steelblue', prior='grey40')) +
+  theme_bw(base_family='CMU Sans Serif', base_size=12) +
+  xlab('') + ylab('Density')
+
+panelA
+
+```
+
+
+# Posterior predicive check
+```{r}
+# ---------------------------------------------------------------------------
+# Panel D: posterior predictive check
+# ---------------------------------------------------------------------------
+
+# OR, more simply, if you want to be explicit about the tolerance:
+# Extract which simulations were accepted
+accepted_idx <- abc_res$region  # logical vector of length nrow(summaries_mat)
+accepted_sums <- summaries_mat[accepted_idx, ]
+
+used_stats <- names(obs_stats)
+
+focal_stats <- c(
+  'cn_mean', 'cn_25', 'cn_50', 'cn_75', 'cn_max', 
+  'cladevar', 'cladesd', 
+  'hs_gini')
+
+stat_labels <- c(
+  cn_mean   = 'Mean CN',
+  cn_25     = '25 percentile CN',
+  cn_50     = 'Median CN',
+  cn_75     = '75 percentile CN',
+  cn_max    = 'Max CN',
+  cladevar  = 'Between-lineage var.',
+  cladesd   = 'Between-lineage SD',
+  hs_gini   = 'Gini (hotspots)'
 )
 
-head(abc_dists)
-
-# r_birth vs p_lethal
-ggplot(abc_dists, aes(r_birth, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
-  scale_color_viridis(option = 'turbo')
-
-# with adjusted values
-ggplot(abc_dists, aes(r_birth_adj, p_lethal_adj, col=dist)) + geom_point(size=3, alpha=0.5) +
-  scale_color_viridis(option = 'turbo') + theme_bw() + xlab('Birth rate') + ylab('Proportion of inaccessible sites')
-
-# How do adjusted and unadjusted values compare?
-ggplot(abc_dists, aes(r_birth_adj, r_birth, col=dist)) + geom_point(size=2, alpha=0.5) +
-  scale_color_viridis(option = 'turbo')
-
-ggplot(abc_dists, aes(p_lethal_adj, p_lethal, col=dist)) + geom_point(size=2, alpha=0.5) +
-  scale_color_viridis(option = 'turbo')
-
-
-# 3d plot
-plot_ly(
-  abc_dists,
-  x = ~r_birth, y = ~p_lethal, z = ~-dist,
-  intensity = ~-dist,
-  type = "mesh3d",
-  colors= colorRamp(rainbow(5))
+ppc_long <- as.data.frame(accepted_sums[, used_stats]) %>%
+  pivot_longer(everything(), names_to = 'statistic', values_to = 'value') 
+  
+obs_ppc <- data.frame(
+  statistic = factor(used_stats, levels = used_stats),
+  xintercept = as.numeric(obs_stats[used_stats])
 )
 
+pD <- ggplot(ppc_long, aes(value)) +
+  geom_density(fill = 'steelblue', alpha = 0.5, colour = NA) +
+  geom_vline(data = obs_ppc, aes(xintercept = xintercept),
+             colour = 'red', linewidth = 0.7) +
+  facet_wrap(~ statistic, scales = 'free', ncol = 3) +
+  theme_bw(base_family = 'CMU Sans Serif', base_size = 10) +
+  theme(strip.background = element_blank()) +
+  xlab('') + ylab('Density')
 
+pD
 ```
 
-Cross validation
+
+# Simulated vs. observed tree
 ```{r}
-cv = cv4abc(params_mat,summaries_mat, abc_res, 100, c(0.01, 0.001), 'mean')
-
-```
-
-
-
-
-Get best model and re-run to get copy numbers
-```{r}
+# Best model
 best_i = which(abc_res$dist==min(abc_res$dist))
 params_mat[best_i,]
 summaries_mat[best_i,]
-stats_obs
+obs_stats
 
-
-args <- c(
+args_best <- c(
   "workflow/scripts/niche_model.py",
   "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
-  "--p_lethal",  "0.6621324",
-  "--r_birth", "4507.4047070",
-  "--r_death", "249.1706106",
+  "--p_essential", params_mat[best_i,'p_essential'],
+  "--p_tolerated", params_mat[best_i,'p_tolerated'],
+  "--r_birth", params_mat[best_i, 'r_birth'],
+  "--niches 7362",
   "--initial_copies", "1",
-  "--max_copies", "40"
+  "--seed", "42"
 )
 
+stdout_best = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args_best, stdout=TRUE)
+cn_sim_best = read.delim(text=stdout_best, sep='\t')
+summary(cn_sim_best)
 
-stdout = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args, stdout=TRUE)
-cn_sim = read.delim(text=stdout, sep='\t')
-head(cn_sim)
+
+# Use weighted medians of the posteriors
+abc_sum <- summary(abc_res)
+str(abc_sum)
+abc_sum
+
+args_wm <- c(
+  "workflow/scripts/niche_model.py",
+  "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
+  "--p_essential", abc_sum['Weighted Median:','p_essential'],
+  "--p_tolerated", abc_sum['Weighted Median:','p_tolerated'],
+  "--r_birth", abc_sum['Weighted Median:','r_birth'],
+  "--niches 7362",
+  "--initial_copies", "1",
+  "--seed", "10"
+)
+
+stdout_wm = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args_wm, stdout=TRUE)
+cn_sim_wm = read.delim(text=stdout_wm, sep='\t')
+summary(cn_sim_wm$copies)
 ```
 
 
-## Figure
+## Copy number distribution
+```{r}
+# Compare observed vs simulated CN distribution
+obs_cn <- copy_numbers[[2]]
+sim_cn <- cn_sim_best$copies
 
+data.frame(
+  quantile = c('25%', '50%', '75%'),
+  observed = quantile(obs_cn, c(0.25, 0.5, 0.75)),
+  simulated = quantile(sim_cn, c(0.25, 0.5, 0.75))
+)
+
+# Plot distributions
+bind_rows(
+  data.frame(CN = obs_cn, source = 'observed'),
+  data.frame(CN = sim_cn, source = 'simulated')
+) %>%
+  ggplot(aes(CN, fill = source)) +
+  geom_density(alpha = 0.4) +
+  theme_bw()
+```
+
+## Figure
 A) Observed and simulated copy numbers with parameter values sampled from the posterior. B) Posterior distributions for birth rate, death rate, and the proportion of suitable niches in the genome.
 
 ```{r}
@@ -269,59 +419,280 @@ p <- ggtree(tree, alpha=0.1, size=0)
 # Add observed values to tree
 p$data$copy_number <- copy_numbers$CN[match(p$data$label, copy_numbers$strain)]
 # Add simulated values to tree
-p$data$copy_number_simulated <- cn_sim$copies[match(p$data$label, cn_sim$tip)]
+p$data$copy_number_simulated <- cn_sim_best$copies[match(p$data$label, cn_sim_best$tip)]
 
 # Plot trees
 ## Observed
-a <- p + geom_tree(aes(col=copy_number)) + scale_color_viridis(option = 'turbo', guide="none") + 
-  theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5, linetype='dashed'))
+a <- p + geom_tree(aes(col=copy_number)) + scale_color_viridis(option = 'turbo', guide="none") 
 
 ## Simulated
 b <- p + geom_tree(aes(col=copy_number_simulated)) + scale_color_viridis(option = 'turbo', guide="none")
 
 ## Combine
-cowplot::plot_grid(a,b)
+lower <- cowplot::plot_grid(a,b, labels=c('B', 'C'))
+cowplot::plot_grid(panelA, lower, nrow=2, labels=c('A', ''))
 
-# Plot posterior distributions
-
+#ggsave('figures/main/fig6.nichemodel.png', width = 22, height = 20, units = "cm", dpi = 300) 
 
 
 ```
 
 
-## Posterior predictive checks
-
+# Cross-validation
 ```{r}
-post_params <- post$adj.values    # or post$unadj.values
+# Basic summary of posteriors
+summary(abc_res)
 
-# Draw posterior samples
-n_sim <- 1000       # how many posterior predictive simulations  
-idx <- sample(1:nrow(post_params), n_sim, replace = TRUE)
-pp_params <- post_params[idx, ]
+# Goodness of fit: cross-validation
+cv_res <- cv4abc(
+  param    = params_mat,
+  sumstat  = summaries_mat,
+  nval     = 100,
+  tols     = c(0.01, 0.05),
+  method   = "neuralnet"
+)
+summary(cv_res)
+plot(cv_res)  # predicted vs true for each parameter
+```
 
-# Simulate data
-pp_sims = 
-
-# Compute summary stats
-pp_sumstats <- t(sapply(pp_sims, compute_sumstats)) 
 
 
-# Compare predictive distribution vs observed summary stats
-pp_check <- abc::gfit(target = obs_stats,
-                      sumstat = sumstats_matrix,
-                      nb.repl = 1000)  # posterior predictive sims
-plot(pp_check)
+# Adjusted vs. unadjusted values
+```{r}
+library(abc)
+library(ggplot2)
+library(cowplot)
+library(dplyr)
+library(tidyr)
 
-# Posterior predictive P values
-pp_pvals <- colMeans(pp_sumstats >= matrix(obs_stats,
-                                           nrow=n_sim,
-                                           ncol=length(obs_stats),
-                                           byrow=TRUE))
-pp_pvals
+# Extract unadjusted and adjusted parameters
+unadj <- as.data.frame(abc_res$unadj.values)
+adj   <- as.data.frame(abc_res$adj.values)
 
+colnames(unadj) <- c('p_lethal', 'r_birth', 'r_death')
+colnames(adj)   <- c('p_lethal', 'r_birth', 'r_death')
+
+# Add iteration index for pairing
+unadj$iter <- 1:nrow(unadj)
+adj$iter   <- 1:nrow(adj)
+
+# ---------------------------------------------------------------------------
+# Panel A: Unadjusted vs adjusted parameters (scatter + arrows)
+# ---------------------------------------------------------------------------
+
+# For visualization, focus on two key parameters
+param_pairs <- list(
+  list(x = 'p_lethal', y = 'r_birth'),
+  list(x = 'p_lethal', y = 'r_death'),
+  list(x = 'r_birth',  y = 'r_death')
+)
+
+plot_pair <- function(xvar, yvar) {
+  df <- data.frame(
+    iter = unadj$iter,
+    x_unadj = unadj[[xvar]],
+    y_unadj = unadj[[yvar]],
+    x_adj   = adj[[xvar]],
+    y_adj   = adj[[yvar]]
+  )
+  
+  ggplot(df, aes(x = x_unadj, y = y_unadj)) +
+    geom_point(size = 0.8, colour = 'grey60', alpha = 0.6) +
+    geom_segment(
+      aes(xend = x_adj, yend = y_adj),
+      arrow = arrow(length = unit(1.5, 'mm'), type = 'closed'),
+      colour = 'steelblue', alpha = 0.3, linewidth = 0.3
+    ) +
+    geom_point(aes(x = x_adj, y = y_adj), size = 0.8, colour = 'steelblue', alpha = 0.8) +
+    theme_bw(base_family = 'CMU Sans Serif', base_size = 11) +
+    labs(
+      x = xvar,
+      y = yvar,
+      title = paste(xvar, 'vs', yvar)
+    ) +
+    theme(plot.title = element_text(size = 10, face = 'bold'))
+}
+
+pA1 <- plot_pair('p_lethal', 'r_birth')
+pA2 <- plot_pair('p_lethal', 'r_death')
+pA3 <- plot_pair('r_birth', 'r_death')
+
+pA <- plot_grid(pA1, pA2, pA3, ncol = 3, labels = c('A1', 'A2', 'A3'),
+                label_fontfamily = 'CMU Sans Serif')
+
+# ---------------------------------------------------------------------------
+# Panel B: Marginal adjustment per parameter (density + shift)
+# ---------------------------------------------------------------------------
+
+unadj_long <- unadj %>%
+  select(-iter) %>%
+  pivot_longer(everything(), names_to = 'parameter', values_to = 'value') %>%
+  mutate(adjustment = 'Unadjusted (accepted)')
+
+adj_long <- adj %>%
+  select(-iter) %>%
+  pivot_longer(everything(), names_to = 'parameter', values_to = 'value') %>%
+  mutate(adjustment = 'Ridge regression\nadjusted')
+
+bind_rows(unadj_long, adj_long) -> dens_df
+
+pB <- ggplot(dens_df, aes(value, fill = adjustment, colour = adjustment)) +
+  geom_density(alpha = 0.4, linewidth = 0.5) +
+  facet_wrap(~ parameter, scales = 'free', ncol = 1) +
+  scale_fill_manual(values = c(
+    'Unadjusted (accepted)'    = 'grey60',
+    'Ridge regression\nadjusted' = 'steelblue'
+  )) +
+  scale_colour_manual(values = c(
+    'Unadjusted (accepted)'    = 'grey40',
+    'Ridge regression\nadjusted' = 'steelblue4'
+  )) +
+  theme_bw(base_family = 'CMU Sans Serif', base_size = 11) +
+  theme(
+    legend.position = c(0.98, 0.98),
+    legend.justification = c('right', 'top'),
+    legend.title = element_blank(),
+    legend.key.size = unit(0.4, 'cm'),
+    strip.background = element_blank()
+  ) +
+  xlab('') + ylab('Density')
+
+pB
+# ---------------------------------------------------------------------------
+# Panel C: Adjustment magnitude per parameter (violin plot)
+# ---------------------------------------------------------------------------
+
+# Compute relative shift for each parameter
+adjustment_df <- data.frame(
+  p_lethal = (adj$p_lethal - unadj$p_lethal) / (max(unadj$p_lethal) - min(unadj$p_lethal)),
+  r_birth  = (adj$r_birth - unadj$r_birth) / (max(unadj$r_birth) - min(unadj$r_birth)),
+  r_death  = (adj$r_death - unadj$r_death) / (max(unadj$r_death) - min(unadj$r_death))
+) %>%
+  mutate(iter = 1:nrow(.)) %>%
+  pivot_longer(-iter, names_to = 'parameter', values_to = 'shift')
+
+pC <- ggplot(adjustment_df, aes(parameter, shift, fill = parameter)) +
+  geom_violin(alpha = 0.6, colour = NA) +
+  geom_hline(yintercept = 0, linetype = 'dashed', colour = 'grey50', linewidth = 0.5) +
+  theme_bw(base_family = 'CMU Sans Serif', base_size = 11) +
+  theme(legend.position = 'none', strip.background = element_blank()) +
+  xlab('') + ylab('Relative shift (standardised)') +
+  scale_fill_manual(values = c(p_lethal = '#1f77b4', r_birth = '#ff7f0e', r_death = '#2ca02c'))
 
 
 ```
 
-## Figure
 
+
+
+# Narrow down priors
+```{r}
+library(dplyr)
+
+posterior_fresh <- as.data.frame(abc_res$adj.values)
+colnames(posterior_fresh) <- c('p_lethal', 'r_birth', 'r_death')
+
+posterior_summary <- posterior_fresh %>%
+  pivot_longer(everything(), names_to = 'parameter', values_to = 'value') %>%
+  group_by(parameter) %>%
+  summarise(
+    q025 = quantile(value, 0.025),
+    q975 = quantile(value, 0.975),
+    median = median(value),
+    .groups = 'drop'
+  )
+
+print(posterior_summary)
+```
+
+
+# Not used
+## Use region-wise summary stats instead of full matrix?
+```{r}
+library(ape)
+library(castor)
+library(magrittr)
+
+# Load phylogeny
+tree <- read.tree(paths$subtree)
+
+# Five prime presence-absence matrix
+matrix5 <- read.csv(args[2], sep='\t')
+rownames(matrix5) <- matrix5[,1]
+matrix5 <- matrix5[,-1]
+colnames(matrix5) <- gsub('X', '', colnames(matrix5))
+
+# Matrix metadata
+matrix_metadata <- read.csv(args[3], sep='\t')
+
+# Output path
+outpath <- args[4]
+
+# Disrupted regions
+regions = unique(matrix_metadata$context) %>% na.omit()
+
+# Reorder matrix rows so they match the tree!
+phyl_order <- match(tree$tip.label, rownames(matrix5))
+matrix5 <- matrix5[phyl_order,]
+all(rownames(matrix5) == tree$tip.label)
+
+hotspot_summary = data.frame()
+
+for (region in regions){
+
+  ufs = subset(matrix_metadata, side==5 & context == region)$site_id
+  if (length(ufs)==0){next}
+
+  regionmat = matrix5[,ufs]
+
+  if (length(ufs) == 1){regionmat_vec = regionmat}
+  else {regionmat_vec = as.integer(rowSums(regionmat) > 0)}
+  nstrains = sum(regionmat_vec)
+
+  # Convert to numeric starting with 1
+  regionmat_vec_mapped <- map_to_state_space(regionmat_vec)
+
+  # Reconstruct ancestral states
+  asr_result <- asr_max_parsimony(tree, tip_states = regionmat_vec_mapped$mapped_states)
+
+  # Which column in ancestral_likelihoods corresponds to presence (1)?
+  presence_state_index <- regionmat_vec_mapped$name2index[["1"]]
+  # For each node, store likelihood of presence
+  lh_presence <- asr_result$ancestral_likelihoods[, presence_state_index]
+
+  # Combine tip and internal node states
+  # Use mapped tip states (1=absent, 2=present) converted to 0/1
+  tip_states_01 <- ifelse(regionmat_vec_mapped$mapped_states == 1, 0, 1)
+  full_states <- c(tip_states_01, lh_presence)
+  full_states_binary <- ifelse(full_states > 0.5, 1, 0)
+
+  # Count number of independent birth/insertion events
+  nbirths = 0
+  ndeaths = 0
+
+  for (j in 1:nrow(tree$edge)) {
+        
+    parent = tree$edge[j, 1]
+    child  = tree$edge[j, 2]
+
+    parent_state = full_states_binary[parent]
+    child_state = full_states_binary[child]
+
+    # No change
+    if (parent_state == child_state) next
+    # Birth
+    if (parent_state==0 & child_state==1){nbirths = nbirths+1}
+    # Death
+    else if (parent_state==1 & child_state==0){ndeaths = ndeaths+1}
+  }
+
+  row = data.frame(
+    'region' = region,
+    'nstrains' = nstrains,
+    'nbirths' = nbirths,
+    'ndeaths' = ndeaths
+  )
+  #print(row)
+  hotspot_summary = rbind(hot
+
+```

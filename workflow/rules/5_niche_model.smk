@@ -26,3 +26,4 @@ rule run_abc:
         """
         python scripts/niche_model_abc.py {input.tree} {params.nsimulations} {params.metadata} {params.outpath}
         """
+
