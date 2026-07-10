@@ -170,8 +170,9 @@ Estimate variable importance with random forests
 library(ranger)
 library(ggplot2)
 
-params <- c('p_essential', 'p_tolerated', 'r_birth')
+params <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
 
+dim(summaries_mat)
 subsamp_n = 10000
 subsamp_i = sample(1:nrow(summaries_mat), subsamp_n)
 
@@ -201,6 +202,18 @@ for (p in params){
   importanzia <- rbind(importanzia, df)
 }
 
+importanzia %>%
+    group_by(stat) %>%
+    summarise(
+      importance_sum = sum(value),
+      importance_mean = mean(value),
+      importance_sd = sd(value),
+      importance_min = min(value),
+      importance_max = max(value),
+      .groups = "drop"
+    ) %>%
+    arrange(desc(importance_sum))
+  
 
 # Plot variable importance
 panelB <- ggplot(importanzia, aes(y=stat, x=value)) + 
@@ -210,6 +223,10 @@ panelB <- ggplot(importanzia, aes(y=stat, x=value)) +
 
 panelB
 ```
+
+
+
+
 
 ```{r}
 cowplot::plot_grid(panelA, panelB, nrow=2, rel_heights= c(2,1))
@@ -221,13 +238,14 @@ cowplot::plot_grid(panelA, panelB, nrow=2, rel_heights= c(2,1))
 ## Select informative core stats
 ```{r}
 core_stats <- c(
-  'cn_50',           
-  'cn_max',            
-  'cladevar',
-  'hs_gini',   
-  'hs_n_top5',
-  'sfs_n_common',
-  'sfs_tajimas_d'
+  #'n_singletons',
+  'n_rare',           
+  #'n_doubletons',            
+  'n_common',
+  'gini_occupancy',   
+  'mean_cn',
+  'max_cn'
+  #'lineage_sd'
 )
 
 obs_stats <- obs_stats[core_stats]
@@ -260,11 +278,11 @@ library(tidyr)
 library(ggplot2)
 
 posterior <- as.data.frame(abc_res$unadj.values)
-colnames(posterior) <- c('p_essential', 'p_tolerated', 'r_birth')
+colnames(posterior) <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
 
 # Add prior samples for comparison
 prior <- as.data.frame(params_mat)
-colnames(prior) <- c('p_essential', 'p_tolerated', 'r_birth')
+colnames(prior) <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
 
 posterior$distribution <- 'posterior'
 prior$distribution     <- 'prior'
@@ -344,13 +362,14 @@ summaries_mat[best_i,]
 obs_stats
 
 args_best <- c(
-  "workflow/scripts/niche_model.py",
+  "workflow/scripts/niche_model_numba.py",
   "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
   "--p_essential", params_mat[best_i,'p_essential'],
   "--p_tolerated", params_mat[best_i,'p_tolerated'],
   "--r_birth", params_mat[best_i, 'r_birth'],
+  "--r_purge", params_mat[best_i, 'r_purge'],
+  "--metadata", paths$metadata,
   "--niches 7362",
-  "--initial_copies", "1",
   "--seed", "42"
 )
 
@@ -365,19 +384,20 @@ str(abc_sum)
 abc_sum
 
 args_wm <- c(
-  "workflow/scripts/niche_model.py",
+  "workflow/scripts/niche_model_numba.py",
   "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
   "--p_essential", abc_sum['Weighted Median:','p_essential'],
   "--p_tolerated", abc_sum['Weighted Median:','p_tolerated'],
   "--r_birth", abc_sum['Weighted Median:','r_birth'],
+  "--r_purge", abc_sum['Weighted Median:','r_purge'],
+  "--metadata", paths$metadata,
   "--niches 7362",
-  "--initial_copies", "1",
   "--seed", "10"
 )
 
 stdout_wm = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args_wm, stdout=TRUE)
 cn_sim_wm = read.delim(text=stdout_wm, sep='\t')
-summary(cn_sim_wm$copies)
+summary(cn_sim_wm$copy_number)
 ```
 
 
@@ -385,7 +405,7 @@ summary(cn_sim_wm$copies)
 ```{r}
 # Compare observed vs simulated CN distribution
 obs_cn <- copy_numbers[[2]]
-sim_cn <- cn_sim_best$copies
+sim_cn <- cn_sim_best$copy_number
 
 data.frame(
   quantile = c('25%', '50%', '75%'),
@@ -419,7 +439,7 @@ p <- ggtree(tree, alpha=0.1, size=0)
 # Add observed values to tree
 p$data$copy_number <- copy_numbers$CN[match(p$data$label, copy_numbers$strain)]
 # Add simulated values to tree
-p$data$copy_number_simulated <- cn_sim_best$copies[match(p$data$label, cn_sim_best$tip)]
+p$data$copy_number_simulated <- cn_sim_best$copy_number[match(p$data$label, cn_sim_best$strain)]
 
 # Plot trees
 ## Observed

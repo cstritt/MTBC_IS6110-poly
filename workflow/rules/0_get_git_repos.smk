@@ -16,6 +16,14 @@ rule clone_lva:
         
         """
 
+rule clone_IS_simulation:
+    output:
+        'software/IS_simulation/abc_sampler.py'
+    shell:
+        """
+        git clone https://github.com/cstritt/IS_simulation.git software/IS_simulation
+        """
+
 rule get_iqtree:
     output:
         'software/iqtree-3.0.1-Linux/bin/iqtree3'

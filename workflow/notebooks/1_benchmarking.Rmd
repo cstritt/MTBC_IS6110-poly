@@ -19,7 +19,7 @@ paths <- tryCatch(
   {
     list(
       benchmarking = snakemake@input$benchmark_summary,
-      assembly_meta = snakemake@input$assembly_metadata,
+      assembly_meta = snakemake@params$assembly_metadata,
       output_html     = snakemake@output[[1]]
     )
   },
@@ -69,7 +69,7 @@ bm_md <- merge(bm_md, asm_md, by.x='assembly', by.y='Assembly')
 head(bm_md)
 
 # Write supplementary table
-write.table(bm_md, 'figures/supplement/TableS1.benchmarking_dataset.tsv', sep='\t', quote=F, row.names = F)
+write.table(bm_md, '../figures/supplement/TableS1.benchmarking_dataset.tsv', sep='\t', quote=F, row.names = F)
 
 
 ```
@@ -101,7 +101,7 @@ figS1 <- ggplot(bm, aes(copy_number, paired_IRs)) +
 
 figS1
 
-ggsave("figures/supplement/figS1.fragmented_copies.png", figS1, width = 12, height = 10, units = "cm", dpi=300)     
+#ggsave("figures/supplement/figS1.fragmented_copies.png", figS1, width = 12, height = 10, units = "cm", dpi=300)     
 
 
 # Exclude 3 assemblies
@@ -162,5 +162,5 @@ figS2 <- ggplot(bm_filt_fig, aes(y=value, x=coverage, fill=side)) +
 
 figS2
 
-ggsave("figures/supplement/figS1.performance.png", figS2, width = 15, height = 12, units = "cm", dpi=300)    
+ggsave("../figures/supplement/figS1.performance.png", figS2, width = 15, height = 12, units = "cm", dpi=300)    
 ```

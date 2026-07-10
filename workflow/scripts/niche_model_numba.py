@@ -16,6 +16,7 @@ Site types:
    1: non-essential, tolerated (insertions allowed, purging occurs)
 """
 
+import argparse
 import random
 import numpy as np
 import pandas as pd
@@ -365,7 +366,7 @@ def get_summary_stats(tip_niches, tip_names, lineage_idx, unique_lineages):
 # ============================================================================
 
 def run_simulation(tree, L, p_essential, p_tolerated, r_birth, r_purge,
-                   tip_names, lineage_idx, unique_lineages, seed=None):
+                   tip_names, lineage_idx, unique_lineages, seed=None, get_stats=True):
     """
     Run a single niche model simulation.
     
@@ -387,7 +388,6 @@ def run_simulation(tree, L, p_essential, p_tolerated, r_birth, r_purge,
     
     # Summarize
     cn = np.array([tip_results[name].sum() for name in tip_names], dtype=float)
-    stats = get_summary_stats(tip_results, tip_names, lineage_idx, unique_lineages)
     
     params = {
         "p_essential": p_essential,
@@ -396,43 +396,54 @@ def run_simulation(tree, L, p_essential, p_tolerated, r_birth, r_purge,
         "r_purge": r_purge
     }
     
-    return params, cn, stats
+    if get_stats:
+        stats = get_summary_stats(tip_results, tip_names, lineage_idx, unique_lineages)
+        return params, cn, stats
+    else:
+        return params, cn
 
 
 if __name__ == "__main__":
-    import sys
+    import argparse
     
-    try:
-        treepath = sys.argv[1]
-        L = int(sys.argv[2])
-        metadata_path = sys.argv[3]
-        seed = int(sys.argv[4]) if len(sys.argv) > 4 else 42
-    except IndexError:
-        print("Usage: niche_model_numba.py <tree.nwk> <genome_length> [seed]")
-        sys.exit(1)
+    # Parse command line
+    args = argparse.ArgumentParser()
+    args.add_argument("--tree", type=str)
+    args.add_argument("--niches", type=int)
+    args.add_argument("--p_essential", type=float)
+    args.add_argument("--p_tolerated", type=float)
+    args.add_argument("--r_birth", type=float)
+    args.add_argument("--r_purge", type=float)
+    args.add_argument("--metadata", type=str)
+    args.add_argument("--seed", type=int, default=42)
+    args = args.parse_args()
     
-    tree = Tree(treepath, format=1)
+    # Parse tree
+    tree = Tree(args.tree, format=1)
     tip_names = sorted(tree.get_leaf_names())
     
     # Create lineage index
-    metadata = pd.read_csv(metadata_path, sep='\t')
+    metadata = pd.read_csv(args.metadata, sep='\t')
     lineage_map = dict(zip(metadata['GNUMBER'], metadata['LINEAGE_x']))
     lineage_idx = np.array([lineage_map[name] for name in tip_names])
     unique_lineages = np.unique(lineage_idx)
     
     # Example: simulate with fixed parameters
-    params, cn, stats = run_simulation(
-        tree, L,
-        p_essential=0.7,
-        p_tolerated=0.2,
-        r_birth=0.5,
-        r_purge=2.0,
+    params, cn = run_simulation(
+        tree, args.niches,
+        p_essential=args.p_essential,
+        p_tolerated=args.p_tolerated,
+        r_birth=args.r_birth,
+        r_purge=args.r_purge,
         tip_names=tip_names,
         lineage_idx=lineage_idx,
         unique_lineages=unique_lineages,
-        seed=seed
+        seed=args.seed,
+        get_stats=False
     )
     
-    print("Parameters:", params)
-    print("Copy numbers:", cn)
-    print("Stats:", stats)
+    # Write to stdout: parameters, then strain name and copy number    
+    #print(f"{params['p_essential']}\t{params['p_tolerated']}\t{params['r_birth']}\t{params['r_purge']}")
+    print("strain\tcopy_number\n")
+    for i, name in enumerate(tip_names):
+        print(f"{name}\t{cn[i]}")

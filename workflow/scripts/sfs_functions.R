@@ -1,219 +1,307 @@
-# Site Frequency Spectrum functions for IS6110 analysis
+#!/usr/bin/env Rscript
+"
+Extract observed summary statistics from empirical IS6110 data.
 
-#' Calculate Gini coefficient
+Matches the Python niche_model_numba.py summary statistics exactly.
+Used for ABC tolerance & posterior predictive checks.
+"
+
+library(dplyr)
+library(tidyr)
+
+
+#' Compute Gini coefficient
 #'
-#' @param x numeric vector of non-negative values
-#'
+#' @param arr numeric vector
 #' @return Gini coefficient (0 = perfect equality, 1 = perfect inequality)
 #'
-#' @export
-gini <- function(x) {
-  x <- sort(as.numeric(x))
-  n <- length(x)
-  if (n == 0 || sum(x) == 0) {
-    return(0.0)
-  }
-  index <- seq_len(n)
-  (2 * sum(index * x)) / (n * sum(x)) - (n + 1) / n
+#' @examples
+#' gini(c(1, 1, 1, 1))  # 0
+#' gini(c(0, 0, 0, 100))  # ~0.75
+#'
+gini <- function(arr) {
+  arr <- sort(as.numeric(arr))
+  n <- length(arr)
+  if (n == 0 || sum(arr) == 0) return(0.0)
+  
+  idx <- seq_len(n)
+  (2.0 * sum(idx * arr)) / (n * sum(arr)) - (n + 1.0) / n
 }
 
 
-#' Calculate site frequency spectrum statistics
+#' Compute site frequency spectrum statistics
 #'
-#' Given a presence-absence matrix where rows are strains and columns are IS sites,
-#' compute summary statistics of the site frequency spectrum (SFS).
+#' @param occupancy numeric vector of per-site occupancy counts
+#' @param n_tips integer, number of tips in tree
 #'
-#' @param mat matrix or data.frame, binary (0/1) with strains in rows, sites in columns.
-#'            Can also be -1 (lethal), 0 (absent), 1 (present) from simulations.
+#' @return list with SFS metrics
 #'
-#' @return list with components:
-#'   - n_singletons: number of sites present in exactly 1 strain
-#'   - n_doubletons: number of sites present in exactly 2 strains
-#'   - n_rare: number of sites present in 1-5 strains (allele freq < ~5%)
-#'   - n_common: number of sites present in >10% of strains
-#'   - singleton_prop: proportion of occupied sites that are singletons
-#'   - tajimas_d: singleton proportion minus expected under neutral model
-#'
-#' @export
-get_site_frequency_spectrum <- function(mat) {
+get_site_frequency_spectrum <- function(occupancy, n_tips) {
   
-  mat <- as.matrix(mat)
-  n_tips <- nrow(mat)
-  
-  # Count occupancy per site
-  occupancy <- colSums(mat == 1)
-  
-  # Filter to compatible sites (present in at least one strain OR marked compatible in simulation)
-  compat <- colSums(mat >= 0) > 0
-  occ <- occupancy[compat]
-  
-  if (length(occ) == 0) {
+  if (length(occupancy) == 0 || sum(occupancy) == 0) {
     return(list(
-      n_singletons = 0,
-      n_doubletons = 0,
-      n_rare = 0,
-      n_common = 0,
+      n_singletons = 0L,
+      n_doubletons = 0L,
+      n_rare = 0L,
+      n_common = 0L,
       singleton_prop = 0.0,
       tajimas_d = 0.0
     ))
   }
   
-  n_singletons <- sum(occ == 1)
-  n_doubletons <- sum(occ == 2)
-  n_rare <- sum(occ <= 5)
-  n_common <- sum(occ > 0.1 * n_tips)
-  singleton_prop <- n_singletons / length(occ)
+  n_singletons <- sum(occupancy == 1)
+  singleton_prop <- n_singletons / length(occupancy)
   
-  # Tajima's D approximation
-  # Under neutral model, E[singleton_prop] ≈ 1/log(n_tips)
-  expected_singleton <- if (n_tips > 1) 1.0 / log(n_tips) else 0.5
-  tajimas_d <- singleton_prop - expected_singleton
+  # Tajima's D proxy: deviation from Ewens expectation
+  tajimas_d <- singleton_prop - (1.0 / log(n_tips) - 0.5)
+  if (!is.finite(tajimas_d)) tajimas_d <- 0.0
   
   list(
-    n_singletons = n_singletons,
-    n_doubletons = n_doubletons,
-    n_rare = n_rare,
-    n_common = n_common,
-    singleton_prop = singleton_prop,
-    tajimas_d = tajimas_d
+    n_singletons = as.integer(n_singletons),
+    n_doubletons = as.integer(sum(occupancy == 2)),
+    n_rare = as.integer(sum(occupancy <= 5)),
+    n_common = as.integer(sum(occupancy > 0.1 * n_tips)),
+    singleton_prop = as.numeric(singleton_prop),
+    tajimas_d = as.numeric(tajimas_d)
   )
 }
 
 
 #' Extract all summary statistics from observed IS6110 data
 #'
-#' Computes the full set of 20 summary statistics used in ABC, matching
-#' the Python implementation.
+#' Computes the full set of 16 summary statistics used in ABC, matching
+#' the Python niche_model_numba implementation.
 #'
 #' @param copy_number_matrix matrix or data.frame, binary (0/1) with strains in rows,
-#'                           IS sites in columns.
-#' @param metadata data.frame with columns 'GNUMBER' (strain names) and 'LINEAGE_x'
-#'                 (lineage assignment). Rows must match columns of copy_number_matrix
-#'                 or be provided in the same order.
+#'                           IS sites (insertion regions) in columns.
+#' @param metadata data.frame with columns:
+#'   - 'GNUMBER': strain/tip names (must match rownames of copy_number_matrix)
+#'   - 'LINEAGE_x': lineage assignment for each strain
 #'
-#' @return data.frame with single row containing all 20 summary statistics:
-#'   - cn_mean, cn_std, cn_min, cn_25, cn_50, cn_75, cn_max
-#'   - cladevar, cladesd
-#'   - hs_gini, hs_n_top5, hs_n_top10, hs_occ_max, hs_occ_mean
-#'   - sfs_n_singletons, sfs_n_doubletons, sfs_n_rare, sfs_n_common,
-#'     sfs_singleton_prop, sfs_tajimas_d
+#' @return data.frame with single row containing all 16 summary statistics:
+#'
+#'   **Copy number (per-strain IS6110 count):**
+#'   - mean_cn, std_cn, min_cn, q25_cn, median_cn, q75_cn, max_cn
+#'
+#'   **Lineage variance (between-lineage copy number heterogeneity):**
+#'   - lineage_var: variance of per-lineage mean copy numbers
+#'   - lineage_sd: standard deviation of per-lineage means
+#'
+#'   **Hotspot occupancy (among compatible sites):**
+#'   - gini_occupancy: Gini coefficient (inequality in per-site occupancy)
+#'   - n_sites_freq_05: number of sites occupied in ≥5% of tips
+#'   - n_sites_freq_10: number of sites occupied in ≥10% of tips
+#'   - max_occupancy: maximum per-site occupancy count
+#'   - mean_occupancy: mean per-site occupancy
+#'
+#'   **Site frequency spectrum:**
+#'   - n_singletons: insertions at exactly 1 tip
+#'   - n_doubletons: insertions at exactly 2 tips
+#'   - n_rare: insertions at ≤5 tips
+#'   - n_common: insertions at >10% of tips
+#'   - singleton_prop: fraction of sites occupied only once
+#'   - tajimas_d: deviation from neutral expectation
 #'
 #' @export
+#'
+#' @examples
+#' \dontrun{
+#'   # Load empirical data
+#'   mat <- read.csv('workflow/results/matrix5.tsv', sep='\t', row.names=1)
+#'   metadata <- read.csv('workflow/results/metadata.tsv', sep='\t')
+#'
+#'   # Extract observed statistics
+#'   obs <- get_all_summary_stats(mat, metadata)
+#'
+#'   # Use in ABC
+#'   abc_result <- abc(
+#'     target = as.numeric(obs),
+#'     param = abc_params,
+#'     sumstat = abc_summaries,
+#'     tol = 0.01,
+#'     method = "rejection"
+#'   )
+#' }
+#'
 get_all_summary_stats <- function(copy_number_matrix, metadata) {
-  
-  library(dplyr)
   
   mat <- as.matrix(copy_number_matrix)
   n_strains <- nrow(mat)
+  n_sites <- ncol(mat)
   
-  # Copy numbers per strain
+  # ========================================================================
+  # COPY NUMBER STATISTICS
+  # ========================================================================
+  
+  # Per-strain IS6110 count
   cn_arr <- rowSums(mat == 1)
   
-  # --- CN statistics ---
-  cn_mean <- mean(cn_arr)
-  cn_std <- sd(cn_arr)
-  cn_min <- min(cn_arr)
-  cn_25 <- unname(quantile(cn_arr, 0.25))
-  cn_50 <- unname(quantile(cn_arr, 0.50))
-  cn_75 <- unname(quantile(cn_arr, 0.75))
-  cn_max <- max(cn_arr)
+  mean_cn <- mean(cn_arr)
+  std_cn <- sd(cn_arr)
+  min_cn <- min(cn_arr)
+  q25_cn <- as.numeric(quantile(cn_arr, 0.25))
+  median_cn <- as.numeric(quantile(cn_arr, 0.50))
+  q75_cn <- as.numeric(quantile(cn_arr, 0.75))
+  max_cn <- max(cn_arr)
   
-  # --- Between-lineage variance ---
-  # Match strains to lineages
+  # ========================================================================
+  # LINEAGE VARIANCE
+  # ========================================================================
+  
+  # Map strains to lineages
   strain_names <- rownames(mat)
   if (is.null(strain_names)) {
-    strain_names <- metadata$GNUMBER[seq_len(n_strains)]
+    strain_names <- seq_len(n_strains)
   }
   
   lineage_vec <- metadata$LINEAGE_x[match(strain_names, metadata$GNUMBER)]
   
-  lineage_means <- tibble(cn = cn_arr, lineage = lineage_vec) %>%
+  # Per-lineage mean copy number
+  lineage_stats <- tibble(cn = cn_arr, lineage = lineage_vec) %>%
     filter(!is.na(lineage)) %>%
     group_by(lineage) %>%
-    summarise(mean_cn = mean(cn), .groups = "drop") %>%
-    pull(mean_cn)
+    summarise(mean_cn = mean(cn), .groups = "drop")
   
-  cladevar <- var(lineage_means, na.rm = TRUE)
-  cladesd <- sd(lineage_means, na.rm = TRUE)
+  lineage_var <- var(lineage_stats$mean_cn, na.rm = TRUE)
+  lineage_sd <- sd(lineage_stats$mean_cn, na.rm = TRUE)
   
   # Handle single-lineage case
-  if (is.na(cladevar)) cladevar <- 0.0
-  if (is.na(cladesd)) cladesd <- 0.0
+  if (is.na(lineage_var)) lineage_var <- 0.0
+  if (is.na(lineage_sd)) lineage_sd <- 0.0
   
-  # --- Hotspot statistics ---
+  # ========================================================================
+  # HOTSPOT OCCUPANCY STATISTICS
+  # ========================================================================
+  
+  # Per-site occupancy (how many strains have insertion at this site)
   occupancy <- colSums(mat == 1)
+  
+  # Compatible sites: those with at least one insertion or compatible genotype
   compat <- colSums(mat >= 0) > 0
   occ_compat <- occupancy[compat]
-  freq_compat <- occ_compat / n_strains
   
-  hs_gini <- gini(occ_compat)
-  hs_n_top5 <- sum(freq_compat >= 0.05)
-  hs_n_top10 <- sum(freq_compat >= 0.10)
-  hs_occ_max <- max(occ_compat)
-  hs_occ_mean <- mean(occ_compat)
+  if (length(occ_compat) == 0) {
+    gini_occupancy <- 0.0
+    n_sites_freq_05 <- 0L
+    n_sites_freq_10 <- 0L
+    max_occupancy <- 0L
+    mean_occupancy <- 0.0
+  } else {
+    freq_compat <- occ_compat / n_strains
+    
+    gini_occupancy <- gini(occ_compat)
+    n_sites_freq_05 <- sum(freq_compat >= 0.05)
+    n_sites_freq_10 <- sum(freq_compat >= 0.10)
+    max_occupancy <- max(occ_compat)
+    mean_occupancy <- mean(occ_compat)
+  }
   
-  # --- Site frequency spectrum ---
-  sfs <- get_site_frequency_spectrum(mat)
+  # ========================================================================
+  # SITE FREQUENCY SPECTRUM
+  # ========================================================================
   
-  # Return as single-row data frame
+  sfs <- get_site_frequency_spectrum(occ_compat, n_strains)
+  
+  # ========================================================================
+  # ASSEMBLE OUTPUT
+  # ========================================================================
+  
   data.frame(
-    cn_mean = cn_mean,
-    cn_std = cn_std,
-    cn_min = cn_min,
-    cn_25 = cn_25,
-    cn_50 = cn_50,
-    cn_75 = cn_75,
-    cn_max = cn_max,
-    cladevar = cladevar,
-    cladesd = cladesd,
-    hs_gini = hs_gini,
-    hs_n_top5 = hs_n_top5,
-    hs_n_top10 = hs_n_top10,
-    hs_occ_max = hs_occ_max,
-    hs_occ_mean = hs_occ_mean,
-    sfs_n_singletons = sfs$n_singletons,
-    sfs_n_doubletons = sfs$n_doubletons,
-    sfs_n_rare = sfs$n_rare,
-    sfs_n_common = sfs$n_common,
-    sfs_singleton_prop = sfs$singleton_prop,
-    sfs_tajimas_d = sfs$tajimas_d,
-    check.names = FALSE
+    # Copy number
+    mean_cn = mean_cn,
+    std_cn = std_cn,
+    min_cn = min_cn,
+    q25_cn = q25_cn,
+    median_cn = median_cn,
+    q75_cn = q75_cn,
+    max_cn = max_cn,
+    
+    # Lineage variance
+    lineage_var = lineage_var,
+    lineage_sd = lineage_sd,
+    
+    # Hotspot occupancy
+    gini_occupancy = gini_occupancy,
+    n_sites_freq_05 = n_sites_freq_05,
+    n_sites_freq_10 = n_sites_freq_10,
+    max_occupancy = max_occupancy,
+    mean_occupancy = mean_occupancy,
+    
+    # Site frequency spectrum
+    n_singletons = sfs$n_singletons,
+    n_doubletons = sfs$n_doubletons,
+    n_rare = sfs$n_rare,
+    n_common = sfs$n_common,
+    singleton_prop = sfs$singleton_prop,
+    tajimas_d = sfs$tajimas_d,
+    
+    check.names = FALSE,
+    row.names = NULL
   )
 }
 
 
-#' Visualize site frequency spectrum
+#' Wrapper: Extract observed stats from standard MTBC IS6110 workflow files
 #'
-#' @param mat matrix, binary (0/1) with strains in rows, sites in columns
-#' @param title character, plot title
+#' @param matrix_path path to matrix file (TSV or CSV with strains as rows)
+#' @param metadata_path path to metadata (TSV with GNUMBER, LINEAGE_x columns)
+#' @param side which matrix to use: 5 or 3 (default: 5)
 #'
-#' @return ggplot object
+#' @return data.frame with observed summary statistics
 #'
 #' @export
-plot_sfs <- function(mat, title = "Site Frequency Spectrum") {
+get_observed_stats_from_files <- function(matrix_path, metadata_path, side = 5) {
   
-  library(ggplot2)
+  # Load matrix (strain × site binary matrix)
+  mat <- read.csv(matrix_path, sep = '\t', row.names = 1)
   
-  mat <- as.matrix(mat)
-  n_tips <- nrow(mat)
-  occupancy <- colSums(mat == 1)
-  compat <- colSums(mat >= 0) > 0
-  occ <- occupancy[compat]
+  # Load metadata
+  metadata <- read.csv(metadata_path, sep = '\t')
   
-  freq <- occ / n_tips
+  # Extract statistics
+  obs <- get_all_summary_stats(mat, metadata)
   
-  freq_df <- data.frame(
-    frequency = freq,
-    count = table(factor(occ, levels = seq_len(n_tips)))
-  )
-  
-  ggplot(freq_df, aes(x = frequency, y = count)) +
-    geom_col(fill = "steelblue", alpha = 0.7) +
-    theme_bw() +
-    labs(
-      title = title,
-      x = "Site frequency (proportion of strains)",
-      y = "Number of sites"
-    ) +
-    scale_x_continuous(limits = c(0, 1))
+  return(obs)
 }
+
+
+# ============================================================================
+# EXAMPLE USAGE (run standalone)
+# ============================================================================
+
+if (!interactive()) {
+  
+  args <- commandArgs(trailingOnly = TRUE)
+  
+  if (length(args) < 2) {
+    cat("Usage: extract_observed_stats.R <matrix.tsv> <metadata.tsv> [output.tsv]\n")
+    cat("\nExample:\n")
+    cat("  Rscript extract_observed_stats.R \\
+      workflow/results/matrix5.tsv \\
+      workflow/results/metadata.tsv \\
+      workflow/results/niche_model/observed_stats.tsv\n")
+    quit(status = 1)
+  }
+  
+  matrix_path <- args[1]
+  metadata_path <- args[2]
+  output_path <- args[3]
+  
+  if (is.na(output_path)) {
+    output_path <- "observed_stats.tsv"
+  }
+  
+  cat("Loading matrix from:", matrix_path, "\n")
+  cat("Loading metadata from:", metadata_path, "\n\n")
+  
+  # Extract
+  obs <- get_observed_stats_from_files(matrix_path, metadata_path)
+  
+  cat("Observed summary statistics:\n")
+  print(obs)
+  
+  # Save
+  write.csv(obs, output_path, row.names = FALSE)
+  cat("\nSaved to:", output_path, "\n")
+}
+

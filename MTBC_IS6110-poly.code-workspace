@@ -4,10 +4,10 @@
 			"path": "."
 		},
 		{
-			"path": "../IS_niche_model"
+			"path": "../detettore6110"
 		},
 		{
-			"path": "../detettore6110"
+			"path": "../IS_simulation"
 		}
 	],
 	"settings": {}

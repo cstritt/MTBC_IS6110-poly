@@ -22,12 +22,12 @@ rule simulate_reads_MSv3:
     input:
         assembly = lambda wildcards: assemblies[wildcards.assembly]
     output:
-        r1 = outdir_bm + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.1.fq.gz',
-        r2 = outdir_bm + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.2.fq.gz'
+        r1 = outdir + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.1.fq.gz',
+        r2 = outdir + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.2.fq.gz'
     params:
         coverage='{coverage}',
         readlength='{readlength}',
-        outdir=outdir_bm + '/benchmarking/art_reads/{assembly}'
+        outdir=outdir + '/benchmarking/art_reads/{assembly}'
     conda: '../envs/art.yml'
     shell:
         """
@@ -49,16 +49,16 @@ rule simulate_reads_MSv3:
 
 rule run_detettore:
     input:
-        r1 = outdir_bm + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.1.fq.gz',
-        r2 = outdir_bm + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.2.fq.gz'
+        r1 = outdir + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.1.fq.gz',
+        r2 = outdir + '/benchmarking/art_reads/{assembly}/COV{coverage}.RL{readlength}.2.fq.gz'
     output:
-        insertions = outdir_bm + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.reference_insertions.tsv',
-        anchors = outdir_bm + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.anchors.tsv' 
+        insertions = outdir + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.reference_insertions.tsv',
+        anchors = outdir + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.anchors.tsv' 
     params:
         target = 'software/detettore6110/resources/is_targets/IS6110.fasta',
         reference = 'software/detettore6110/resources/reference/MTBC0_v1.1.fasta',
         annotation = 'software/detettore6110/resources/reference/MTBC0v1.1_PGAP_annot.gff',
-        outdir = outdir_bm + '/benchmarking/detettore/{assembly}',
+        outdir = outdir + '/benchmarking/detettore/{assembly}',
         pref = '{assembly}_COV{coverage}_RL{readlength}'
 
     conda: '../envs/detettore6110.yml'
@@ -76,10 +76,10 @@ rule run_detettore:
 rule benchmark_detettore:
     input:
         assembly = lambda wildcards: assemblies[wildcards.assembly],
-        isescan = outdir_bm + '/benchmarking/isescan/{assembly}/{assembly}.fna.is.fna',
-        detettore = outdir_bm + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.anchors.tsv'
-    output: outdir_bm + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval.tsv'
-    log: outdir_bm + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval_detailed.tsv'
+        isescan = outdir + '/benchmarking/isescan/{assembly}/{assembly}.fna.is.fna',
+        detettore = outdir + '/benchmarking/detettore/{assembly}/{assembly}_COV{coverage}_RL{readlength}.anchors.tsv'
+    output: outdir + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval.tsv'
+    log: outdir + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval_detailed.tsv'
     params:
         target = 'software/detettore6110/resources/is_targets/IS6110.fasta',
         target_cluster = config['detettore']['is_cluster'],
@@ -99,8 +99,8 @@ rule benchmark_detettore:
         """
 
 rule combine_results:
-    input: expand(outdir_bm + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval.tsv', assembly = assemblies.keys(), coverage = config['benchmarking']['coverages'], readlength = config['benchmarking']['readlengths'])
-    output: outdir_bm + '/benchmarking/detettore/benchmark_summary.tsv'
+    input: expand(outdir + '/benchmarking/detettore/evaluation/{assembly}_COV{coverage}_RL{readlength}.eval.tsv', assembly = assemblies.keys(), coverage = config['benchmarking']['coverages'], readlength = config['benchmarking']['readlengths'])
+    output: outdir + '/benchmarking/detettore/benchmark_summary.tsv'
     run:
 
         header = [
@@ -128,10 +128,3 @@ rule combine_results:
                         outhandle.write('\t'.join(row)+'\n')
 
         outhandle.close()
-
-
-rule summarize:
-    input: outdir_bm + '/benchmarking/detettore/benchmark_summary.tsv'
-    output: outdir_bm + '/benchmarking/summary.html'
-    conda: '../envs/R.yml'
-    script: '../notebooks/1_benchmarking.Rmd'

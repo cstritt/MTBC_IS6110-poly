@@ -47,6 +47,7 @@ motif:
 
 benchmarking:
   assemblies: config/datasets/31assemblies.tsv
+  assembly_metadata: ../metadata/Harrison2024.metadata.tsv
   min_id: 0.9
   anchor_length: 300
   readlengths: [100, 150]

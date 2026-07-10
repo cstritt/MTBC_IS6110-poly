@@ -1,30 +1,18 @@
 include: 'rules/0_mise_en_place.smk'
-#include: 'rules/0_get_git_repos.smk'
-
-#include: 'rules/1_benchmark_detettore.smk'
-#include: 'rules/2_phylogeny.smk'
-#include: 'rules/2_detettore.smk'
-include: 'rules/4_motif_enrichment.smk'
+include: 'rules/0_get_git_repos.smk'
+include: 'rules/1_benchmark_detettore.smk'
+include: 'rules/2_phylogeny.smk'
+include: 'rules/2_detettore.smk'
+#include: 'rules/4_motif_enrichment.smk'
 #include: 'rules/5_niche_model.smk'
-#include: 'rules/9_figures_n_stats.smk'
-
-rule explore:
-    input:
-        outdir + '/motif/fimo/fimo.tsv',
-        outdir + '/motif/fimo_top_motif/fimo.tsv',
-        expand(outdir + '/motif/streme_bg_{i}/streme.xml',
-               i=range(config.get('motif', {}).get('n_backgrounds', 10))),
-        outdir + '/motif/motif_summary.tsv'
-        #outdir + '/niche_model/abc_params.tsv',
-        #outdir + '/niche_model/abc_summaries.tsv',
-        #outdir + '/is6110.RData'
+include: 'rules/9_figures_and_stats.smk'
 
 rule main:
     input:
         outdir + '/1_benchmarking.html',
         outdir + '/2_copynumbers.html',
         outdir + '/3_birthdeath.html',
-        outdir + '/4_nichespace.html',
-        outdir + '/5_nichemodel.html'
+        #outdir + '/4_nichespace.html',
+        #outdir + '/5_nichemodel.html'
            
-localrules: clone_detettore, clone_lva
+localrules: clone_detettore, clone_lva, clone_IS_simulation
