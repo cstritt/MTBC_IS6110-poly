@@ -19,10 +19,10 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 paths <- tryCatch(
   {
     list(
-      branchsummary_5 = snakemake@input[[1]],
-      branchsummary_3 = snakemake@input[[2]],
-      treedata        = snakemake@input[[3]],
-      rdata           = snakemake@input[[4]],
+      branchsummary_5 = snakemake@input$branchsummary_5,
+      branchsummary_3 = snakemake@input$branchsummary_3,
+      treedata        = snakemake@input$treedata,
+      rdata           = snakemake@input$rdata,
       output_html     = snakemake@output[[1]]
     )
   },

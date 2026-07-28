@@ -28,6 +28,9 @@ annotations:
   h37rv: ../data/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
   mtbc0_h37rv_map: ../data/MTBC0/mtbc0_to_h37rv.genemap.tsv
 
+dejesus_orfs : ../data/DeJesus2017/orfs.csv
+who_resistance: ../data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt
+
 gwas:
   permutations: 100
 

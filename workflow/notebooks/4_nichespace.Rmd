@@ -18,16 +18,51 @@ paths <- tryCatch(
   {
     list(
       rdata = snakemake@input$rdata,
+      hotspot_summary = snakemake@input$hotspot_summary,
+      fiveprime_ancestral_lh = snakemake@input$five_alh,
+
+      
+      mtbc0_gff = snakemake@params$annot,
+      dejesus = snakemake@params$dejesus,
+      genemap = snakemake@params$genemap,
+      regionmap = snakemake@params$regionmap,
+      
       output_html     = snakemake@output$html
     )
   },
   error = function(e){
     list(
       rdata = 'is6110.RData',
+      hotspot_summary = 'workflow/results/detettore/hotspot_summary.tsv',
+      fiveprime_ancestral_lh = 'workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv',
+
+      mtbc0_gff = 'data/MTBC0/MTBC0v1.1_PGAP_annot.gff',
+      dejesus = 'data/DeJesus2017/orfs.csv',
+      genemap = 'data/MTBC0/mtbc0_to_h37rv.genemap.tsv',
+      regionmap = 'data/MTBC0/MTBC.genomic_regions.tsv',
+      
       output_html     = NULL  # or whatever default makes sense
     )
   }
 )
+
+library(ggwordcloud)
+library(glmmTMB)
+library(gt)
+library(magick)
+library(magrittr)
+library(purrr)
+library(RColorBrewer)
+library(readr)
+library(reshape2)
+library(stringr)
+library(tidyr)
+library(tidytree)
+library(tidyverse)
+library(treeio)
+library(vegan)
+library(viridis)
+library(xml2)
 
 ```
 
@@ -84,73 +119,6 @@ n_uFS_3 = ncol(matrix3)
 print(paste('Proportion of insertion sites with mappable reference position: ', n_refins_unique/n_uFS_5, n_refins_unique/n_uFS_3))
 ```
 
-
-
-## Explore non-mappable insertion sites
-Blast non-mappable flanking regions against all genic and intergenic regions in MTBCO to get an idea what they are.
-
-```{r}
-source('workflow/notebooks/utils.R')
-
-# Get unmapped sites
-nonmappable = subset(matrix_metadata,is.na(ref_position))
-
-# Blast flanking sequences
-matrix_metadata <- add_blast_info(matrix_metadata)
-
-# Summarize by anchor and feature
-hits_d = list()
-feature_count = list()
-
-for (i in 1:nrow(nonmappable)){
-  row = nonmappable[i,]  
-  query = paste(row$side, row$site_id, sep='_')
-  
-
-## Explore non-mappable insertion sites
-Blast non-mappable flanking regions against all genic and intergenic regions in MTBCO to get an idea what they are.
-
-```{r}
-source('workflow/notebooks/utils.R')
-
-# Get unmapped sites
-non
-  hit = row$blasthit
-  if (is.na(hit)){next}
-
-  pref = substr(hit,1,2)
-  if (pref=='mt'){categ = get_alternative_gene_name(hit, genemap)}
-  else if (pref=='ig'){categ='intergenic'}
-  else if (pref=='id'){categ='repeat'}
-  else if (pref=='ge'){categ='pseudogene'}
-
-  hits_d[[query]] = categ
-
-  if (is.null(feature_count[[categ]])) {feature_count[[categ]] <- c()}
-  feature_count[[categ]] <- c(feature_count[[categ]], query)
-  
-}
-
-hits_d
-
-feature_count = lapply(feature_count, unique)
-lapply(feature_count, length)
-
-word_counts = data.frame(
-  'feature' = names(feature_count),
-  'count' = unlist(unname(lapply(feature_count, length)))
-)
-
-head(word_counts)
-
-# Word cloud
-ggplot(subset(word_counts, count>2), aes(label = feature, size = count)) +
-  geom_text_wordcloud(shape='square') +
-  scale_size_area(max_size = 20) +
-  theme_minimal()
-
-
-```
 
 
 # Non-random distribution of IS6110
@@ -294,7 +262,7 @@ table(table(refins_filt_dedup$unique_id) > 1)
 
 
 # Are intergenic insertion sites overrepresented?
-gff_path <- 'data/MTBC0/MTBC0v1.1_PGAP_annot.gff'
+gff_path <- paths$mtbc0_gff
 genic_observed <- unname(table(refins_filt_dedup$context)['genic'])
 intergenic_observed <- unname(table(refins_filt_dedup$context)['intergenic'])
 chromosome_length = 4435783
@@ -471,7 +439,7 @@ ko_intergenic = unique(intergenic$gene)
 How do genes never affected by IS6110 compare to in vitro essential genes, as defined by De Jesus et al. 2017? Expectation: Many more genes should be needed outside a Petri dish/flask!
 ```{r}
 # Table S3 in De Jesus et al.
-orfs_dejesus <- read.csv('manuscript/literatura/DeJesus2017/orfs.csv', sep= '\t')
+orfs_dejesus <- read.csv(paths$dejesus, sep= '\t')
 dim(orfs_dejesus)
 table(orfs_dejesus$Final.Call)
 
@@ -584,8 +552,8 @@ library(magrittr)
 
 load(paths$rdata)
 
-hotspots = read.csv("workflow/results/detettore/hotspot_summary.tsv", sep='\t')
-genemap = read.csv("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
+hotspots = read.csv(paths$hotspot_summary, sep='\t')
+genemap = read.csv(paths$genemap, sep='\t')
 
 head(hotspots)
 head(genemap)
@@ -838,17 +806,6 @@ augment_genemap <- function(genemap, dejesus_path, resistance_path){
 }
 
 
-# Add information to gene metadata: essentiality, distance to origin, resistance
-genemap = read.delim("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
-
-
-# Add essentiality and resistance information
-genemap = augment_genemap(
-  genemap,
-  'manuscript/literatura/DeJesus2017/orfs.csv',
-  'data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt'
-)
-
 ```
 
 ```{r}
@@ -863,9 +820,6 @@ hotspots_ar
 # Also check intergenic regions
 ar_genes_concat = paste(ar_genes, collapse='|')
 hotspots_ar = hotspots[grepl(ar_genes_concat, hotspots$region),]
-
-
-
 
 
 ```
@@ -940,7 +894,7 @@ library(magick)
 library(Cairo)
 library(dplyr)
 
-regionmap = read.csv("data/MTBC0/MTBC.genomic_regions.tsv", sep='\t')
+regionmap = read.csv(paths$regionmap, sep='\t')
 head(regionmap)
 
 # Detettore regions that are not in the region map
@@ -1598,7 +1552,7 @@ Intergenic regions are slightly more AT-rich.
 ```{r}
 library(dplyr)
 
-region_stats <- read.csv("data/MTBC0/MTBC.genomic_regions.tsv", sep='\t')
+region_stats <- read.csv(paths$regionmap, sep='\t')
 head(region_stats)
 
 region_stats %>%
@@ -2524,6 +2478,72 @@ plot_grid(a,b)
 
 
 # Not used
+
+## Explore non-mappable insertion sites
+Blast non-mappable flanking regions against all genic and intergenic regions in MTBCO to get an idea what they are.
+
+```{r}
+source('workflow/notebooks/utils.R')
+
+# Get unmapped sites
+nonmappable = subset(matrix_metadata,is.na(ref_position))
+
+# Blast flanking sequences
+matrix_metadata <- add_blast_info(matrix_metadata)
+
+# Summarize by anchor and feature
+hits_d = list()
+feature_count = list()
+
+for (i in 1:nrow(nonmappable)){
+  row = nonmappable[i,]  
+  query = paste(row$side, row$site_id, sep='_')
+  
+
+## Explore non-mappable insertion sites
+Blast non-mappable flanking regions against all genic and intergenic regions in MTBCO to get an idea what they are.
+
+```{r}
+source('workflow/notebooks/utils.R')
+
+# Get unmapped sites
+non
+  hit = row$blasthit
+  if (is.na(hit)){next}
+
+  pref = substr(hit,1,2)
+  if (pref=='mt'){categ = get_alternative_gene_name(hit, genemap)}
+  else if (pref=='ig'){categ='intergenic'}
+  else if (pref=='id'){categ='repeat'}
+  else if (pref=='ge'){categ='pseudogene'}
+
+  hits_d[[query]] = categ
+
+  if (is.null(feature_count[[categ]])) {feature_count[[categ]] <- c()}
+  feature_count[[categ]] <- c(feature_count[[categ]], query)
+  
+}
+
+hits_d
+
+feature_count = lapply(feature_count, unique)
+lapply(feature_count, length)
+
+word_counts = data.frame(
+  'feature' = names(feature_count),
+  'count' = unlist(unname(lapply(feature_count, length)))
+)
+
+head(word_counts)
+
+# Word cloud
+ggplot(subset(word_counts, count>2), aes(label = feature, size = count)) +
+  geom_text_wordcloud(shape='square') +
+  scale_size_area(max_size = 20) +
+  theme_minimal()
+
+
+```
 
 ## Burden analysis 
 ```{r}

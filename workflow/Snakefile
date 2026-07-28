@@ -1,18 +1,18 @@
 include: 'rules/0_mise_en_place.smk'
-include: 'rules/0_get_git_repos.smk'
 include: 'rules/1_benchmark_detettore.smk'
-include: 'rules/2_phylogeny.smk'
-include: 'rules/2_detettore.smk'
-#include: 'rules/4_motif_enrichment.smk'
-#include: 'rules/5_niche_model.smk'
+include: 'rules/2a_detettore.smk'
+include: 'rules/2b_phylogeny.smk'
+include: 'rules/3_birthdeath.smk'
+include: 'rules/4_motif_enrichment.smk'
+include: 'rules/5_niche_model.smk'
 include: 'rules/9_figures_and_stats.smk'
 
 rule main:
     input:
         outdir + '/1_benchmarking.html',
-        outdir + '/2_copynumbers.html',
-        outdir + '/3_birthdeath.html',
-        #outdir + '/4_nichespace.html',
-        #outdir + '/5_nichemodel.html'
+        outdir + '/2_copy_numbers.html',
+        outdir + '/3_birth_death.html',
+        outdir + '/4_niche_space.html',
+        outdir + '/5_niche_model.html'
            
 localrules: clone_detettore, clone_lva, clone_IS_simulation

@@ -1,4 +1,3 @@
-
 rule create_gnr_file:
     input: config['gnumbers']
     output: 'config/datasets/gnrs.txt'
@@ -129,11 +128,27 @@ rule root_and_drop:
 
     params:
         outgroup = config['phylogeny']['outgroup']
-    conda: '../envs/bio.yml'
+    conda: '../envs/R.yml'
     shell:
         """
-        Rscript scripts/root_tree.r {input.njtree} {params.outgroup} {output.njtree}
-        Rscript scripts/root_tree.r {input.iqtree} {params.outgroup} {output.iqtree}
-
+        Rscript scripts/root_tree.R {input.njtree} {params.outgroup} {output.njtree}
+        Rscript scripts/root_tree.R {input.iqtree} {params.outgroup} {output.iqtree}
         """
 
+rule ASR_copy_numbers:
+    input:
+        tree = outdir + '/phylogeny/snp_alignment.rooted.treefile',
+        copy_numbers = outdir + '/detettore/ALL_copy_numbers.tsv',
+    output: outdir + '/phylogeny/treedata.CN_ASR.tsv'
+    params: 
+        metadata = config['metadata'],
+        outpath = outdir + '/detettore'
+    conda: '../envs/asr.yml'
+    shell:
+        """
+        Rscript scripts/ancestral_state_reconstruction.copy_numbers.r \
+          {input.tree} \
+          {params.metadata} \
+          {input.copy_numbers} \
+          {params.outpath}
+        """

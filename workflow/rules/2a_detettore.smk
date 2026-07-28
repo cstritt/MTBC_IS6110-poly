@@ -58,34 +58,6 @@ rule detettore_summarize_results:
 
         """
 
-rule ancestral_state_reconstruction:
-    """
-    
-    """
-    input:
-        tree = outdir + '/phylogeny/snp_alignment.rooted.treefile',
-        matrix5 = outdir + '/detettore/ALL_presence-absence.5prime.tsv',
-        matrix3 = outdir + '/detettore/ALL_presence-absence.3prime.tsv'
-    output: 
-        as5prime = outdir + '/detettore/AS_5prime.ancestral_likelihoods.tsv',
-        as3prime = outdir + '/detettore/AS_3prime.ancestral_likelihoods.tsv'
-    params: 
-        outpath = outdir + '/detettore'
-    conda: '../envs/asr.yml'
-    shell:
-        """
-        Rscript scripts/AS_reconstruction.r \
-          {input.tree} \
-          {input.matrix5} \
-          {params.outpath} \
-          AS_5prime
-
-        Rscript scripts/AS_reconstruction.r \
-          {input.tree} \
-          {input.matrix3} \
-          {params.outpath} \
-          AS_3prime
-        """
 
 rule summarize_hotspots:
     input: 
@@ -97,7 +69,7 @@ rule summarize_hotspots:
     conda: '../envs/asr.yml'
     shell:
         """
-        Rscript scripts/infer_hotspots.r \
+        Rscript scripts/infer_hotspots.R \
           {input.tree} \
           {input.matrix5} \
           {input.matrix_meta} \

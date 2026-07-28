@@ -13,31 +13,41 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 ```
 
 
-
 # Snakemake I/O
 ```{r}
-paths <- tryCatch(
-  {
-    list(
+
+if (exists("snakemake")) {
+  paths <- list(
       subtree = snakemake@input$subtree,
-      copy_numbers = snakemake@input$copy_numbers,
       abc_params = snakemake@input$abc_params,
       abc_summary = snakemake@input$abc_summary,
-      metadata = snakemake@params$metadata,
+      rdata = snakemake@input$rdata,
       output_html     = snakemake@output[[1]]
     )
-  },
-  error = function(e){
-    list(
+} else {
+  message("No snakemake object found — using default paths for interactive testing")
+  paths <- list(
       subtree = "workflow/results/niche_model/subsampled_tree.rooted.nex",
-      copy_numbers = "workflow/results/detettore/ALL_copy_numbers.tsv",
       abc_params = "workflow/results/niche_model/abc_params.tsv",
       abc_summary = "workflow/results/niche_model/abc_summaries.tsv",
-      metadata = "metadata/10k/metadata_reduced.tsv",
+      rdata = "workflow/results/is6110.RData",
       output_html     = NULL
     )
-  }
-)
+}
+
+library(abc)
+library(ape)
+library(castor)
+library(cowplot)
+library(dplyr)
+library(GGally)
+library(ggplot2)
+library(ggtree)
+library(magrittr)
+library(ranger)
+library(reshape2)
+library(tidyr)
+library(viridis)
 
 ```
 
@@ -72,13 +82,11 @@ library(ape)
 source('workflow/scripts/sfs_functions.R')
 
 # Compute observed summary statistics
-load('is6110.RData')  # loads matrix5 (presence/absence), metadata
+load(paths$rdata)  # loads matrix5 (presence/absence), metadata
 
 
 # Subset matrix to strains present in sub tree
-rownames(matrix5)
-
-treesim <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
+treesim <- read.tree(paths$subtree)
 treesim$tip.label
 
 matrix_treesim <- matrix5[treesim$tip.label,]
@@ -91,30 +99,25 @@ print(obs_stats)
 ```
 
 
-
-
 ## Internal vs. terminal branches
 ```{r}
 library(ape)
 library(ggtree)
 library(ggplot2)
 
-tree <- read.tree('workflow/results/niche_model/subsampled_tree.rooted.nex')
-
-tree$edge.length[1:tree$Nnode]
+treesim$edge.length[1:tree$Nnode]
 
 branch_lengths <- data.frame(
-  length = tree$edge.length,
+  length = treesim$edge.length,
   type = c(
-    rep('terminal', tree$Nnode),
-    rep('internal',length(tree$edge.length)-tree$Nnode)
+    rep('terminal', treesim$Nnode),
+    rep('internal',length(treesim$edge.length)-treesim$Nnode)
   )
 )
 head(branch_lengths)
 
 ggplot(branch_lengths, aes(x=type, y=length)) + geom_boxplot()
 ggplot(branch_lengths, aes(length, col=type)) + geom_density()
-
 
 branch_lengths %>%
   group_by(type) %>%
@@ -132,12 +135,12 @@ library(magrittr)
 library(ggplot2)
 library(reshape2)
 
-params_mat <- read.csv('workflow/results/niche_model/abc_params.tsv', sep='\t') %>% as.matrix()
+params_mat <- read.csv(paths$abc_params, sep='\t') %>% as.matrix()
 #colnames(params_mat) <- c('p_lethal', 'p_deleterious', 'r_birth', 'r_death', 'r_death_mult')
 dim(params_mat)
 summary(params_mat)
 
-summaries_mat <- read.csv('workflow/results/niche_model/abc_summaries.tsv', sep='\t') %>% as.matrix()
+summaries_mat <- read.csv(paths$abc_summary, sep='\t') %>% as.matrix()
 dim(summaries_mat)
 colnames(summaries_mat)
 summary(summaries_mat)
@@ -149,7 +152,7 @@ as.data.frame(summaries_mat) %>% melt() %>%
 ```
 
 
-## Find informative summary stats
+# Find informative summary stats
 The full set of summary stats is redundant. Use random forest to find
 stats that are actuall informative.
 
@@ -170,7 +173,7 @@ Estimate variable importance with random forests
 library(ranger)
 library(ggplot2)
 
-params <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
+params <- c('p_neutral', 'gamma_shape', 'gamma_scale', 'r_birth', 'r_loss')
 
 dim(summaries_mat)
 subsamp_n = 10000
@@ -224,10 +227,6 @@ panelB <- ggplot(importanzia, aes(y=stat, x=value)) +
 panelB
 ```
 
-
-
-
-
 ```{r}
 cowplot::plot_grid(panelA, panelB, nrow=2, rel_heights= c(2,1))
 ```
@@ -241,14 +240,112 @@ core_stats <- c(
   #'n_singletons',
   'n_rare',           
   #'n_doubletons',            
-  'n_common',
+  #'n_common',
   'gini_occupancy',   
   'mean_cn',
-  'max_cn'
-  #'lineage_sd'
+  #'max_cn',
+  'lineage_sd'
 )
 
-obs_stats <- obs_stats[core_stats]
+obs_stats_core <- obs_stats[core_stats]
+summaries_mat_core <- summaries_mat[,core_stats]
+
+```
+
+
+# Prior diagnostics
+Check whether the priors used actually produce meaningful results. I had issues with "pathological regimes", where a large proportion of simulations produced maximal or 0 copy numbers...
+```{r}
+
+# Calculate Euclidean distance
+obs <- unlist(obs_stats_core)
+
+d <- sqrt(rowSums((sweep(as.matrix(summaries_mat_core), 2, obs))^2))
+quantile(d, c(.001,.01,.05,.1))
+keep <- order(d)[1:20]
+
+cbind(d[keep], summaries_mat_core[keep, ])
+
+# Steep jump in distances between 0 and max. CN
+plot(sort(d))
+
+# Plot parameters against core summary stats
+subsamp_n = 100000
+subsamp_i = sample(1:nrow(summaries_mat), subsamp_n)
+simdf <- cbind(params_mat[subsamp_i,], summaries_mat[subsamp_i,]) %>% as.data.frame()
+
+# r_birth
+ggplot(simdf, aes(r_birth, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# r_loss
+ggplot(simdf, aes(r_loss, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# p_neutral
+ggplot(simdf, aes(p_neutral, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# gamma_shape
+ggplot(simdf, aes(gamma_shape, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# gamma_scale
+ggplot(simdf, aes(gamma_scale, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+
+# How many simulations are pathological?
+regime <- ifelse(
+    summaries_mat[,"mean_cn"] == 0,
+    "extinct",
+    ifelse(summaries_mat[,"mean_cn"] > 50,
+           "exploding",
+           "reasonable")
+)
+table(regime)
+
+
+boxplot(params_mat[,"p_neutral"] ~ regime)
+boxplot(params_mat[,"r_birth"] ~ regime)
+boxplot(params_mat[,"r_loss"] ~ regime)
+boxplot(params_mat[,"gamma_shape"] ~ regime)
+boxplot(params_mat[,"gamma_scale"] ~ regime)
+
+
+# Tighten posteriors
+patholog_i = which(summaries_mat[,"mean_cn"]==0 | summaries_mat[,"mean_cn"] > 100)
+print(paste(length(patholog_i), "observations out of", nrow(summaries_mat), "produce unrealistic results"))
+
+params_mat_tight <- params_mat[-patholog_i, ]
+summaries_mat_tight <- summaries_mat[-patholog_i,]
+summaries_mat_tight_core <- summaries_mat_tight[,core_stats]
+
+
+# Multiple criteria
+summary(as.data.frame(summaries_mat))
+
+realistic_ <- with(
+  as.data.frame(summaries_mat),
+  mean_cn > 0 & mean_cn < 30 &
+  max_cn < 50
+  )
+table(realistic_)
+
+summary(params_mat[realistic_, ])
+obs_stats
+summary(summaries_mat[realistic_,])
+
 ```
 
 # ABC
@@ -256,20 +353,18 @@ obs_stats <- obs_stats[core_stats]
 library(abc)
 
 
-# Focus on core stats
-summaries_mat <- summaries_mat[,core_stats]
-
-
 # Run abc (rejection followed by local linear regression)
-abc_res <- abc(target = obs_stats,
-               param = params_mat,
-               sumstat = summaries_mat,
-               tol = 0.001,   # keep top 1% closest sims
+
+abc_res <- abc(target = obs_stats_core,
+               param = params_mat_tight,
+               sumstat = summaries_mat_tight_core,
+               tol = 0.01,   # keep top 1% closest sims
                method = "neuralnet")
 
 summary(abc_res)
 
 ```
+
 
 
 # Posterior vs. prior distributions
@@ -278,11 +373,11 @@ library(tidyr)
 library(ggplot2)
 
 posterior <- as.data.frame(abc_res$unadj.values)
-colnames(posterior) <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
+#colnames(posterior) <- c('p_neutral', 'gamma_shape', 'gamma_scale', 'r_birth', 'r_loss')
 
 # Add prior samples for comparison
 prior <- as.data.frame(params_mat)
-colnames(prior) <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
+#colnames(prior) <- c('p_essential', 'p_tolerated', 'r_birth', 'r_purge')
 
 posterior$distribution <- 'posterior'
 prior$distribution     <- 'prior'
@@ -312,7 +407,7 @@ panelA
 # OR, more simply, if you want to be explicit about the tolerance:
 # Extract which simulations were accepted
 accepted_idx <- abc_res$region  # logical vector of length nrow(summaries_mat)
-accepted_sums <- summaries_mat[accepted_idx, ]
+accepted_sums <- summaries_mat_tight[accepted_idx, ]
 
 used_stats <- names(obs_stats)
 
@@ -357,8 +452,8 @@ pD
 ```{r}
 # Best model
 best_i = which(abc_res$dist==min(abc_res$dist))
-params_mat[best_i,]
-summaries_mat[best_i,]
+params_mat_tight[best_i,]
+summaries_mat_tight[best_i,]
 obs_stats
 
 args_best <- c(

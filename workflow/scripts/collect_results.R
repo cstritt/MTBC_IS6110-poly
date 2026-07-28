@@ -1,40 +1,76 @@
 #!/usr/bin/Rscript
 
-" Collect results, parse them and save as an RData image. 
-To avoid repetitions and ensure that all the following analyses use 
-exactly the same data imported from the same R image. 
-"
+#' Collect and harmonize workflow outputs for downstream analyses.
+#'
+#' This script reads the main inputs produced by the phylogeny and detettore
+#' workflow steps, prepares them into a shared R environment, and saves the
+#' resulting objects as an RData image. The goal is to avoid repeated data
+#' loading and to ensure that downstream notebooks use the same preprocessed
+#' data.
+#'
+#' The script is designed to be called by Snakemake, but it also supports
+#' interactive use by falling back to local test paths when the Snakemake
+#' object is not available.
 
 library(ape)
 library(ggplot2)
 library(reshape2)
+library(magrittr)
 
 
-args = commandArgs(trailingOnly = TRUE)
+# ---- Configure input and output paths ----
 
-tree             = args[1]
-metadata         = args[2]
-matrix5          = args[3]
-matrix3          = args[4]
-matrix_metadata  = args[5]
-refins           = args[6]
-anchormap        = args[7]
-copy_numbers     = args[8]
+if (exists("snakemake")) {
+  paths <- list(
+      # INPUT
+      tree             = snakemake@input$tree,
+      matrix5          = snakemake@input$matrix5,
+      matrix3          = snakemake@input$matrix3,
+      matrix_metadata  = snakemake@input$matrix_metadata,
+      refins           = snakemake@input$refins,
+      anchormap        = snakemake@input$anchormap,
+      copy_numbers     = snakemake@input$copy_numbers,
+      # PARAMS
+      metadata         = snakemake@params$metadata,
+      genemap          = snakemake@params$genemap,
+      dejesus          = snakemake@params$dejesus,
+      resistance       = snakemake@params$resistance,
+      # OUTPUT
+      outfile          = snakemake@output[[1]]
+    )
+} else {
+  message("No snakemake object found — using default paths for interactive testing")
+  paths <- list(
+      # INPUT
+      metadata = 'metadata/10k/metadata_reduced.tsv',
+      tree = 'workflow/results/phylogeny/snp_alignment.rooted.treefile',
+      matrix5 = 'workflow/results/detettore/ALL_presence-absence.5prime.tsv',
+      matrix3 = 'workflow/results/detettore/ALL_presence-absence.3prime.tsv',
+      matrix_metadata = 'workflow/results/detettore/ALL_presence-absence.metadata.tsv',
+      refins = 'workflow/results/detettore/ALL_reference_insertions.tsv',
+      anchormap = 'workflow/results/detettore/anchor_map.tsv',
+      copy_numbers = 'workflow/results/detettore/ALL_copy_numbers.tsv',
+      # PARAMS
+      genemap = 'data/MTBC0/mtbc0_to_h37rv.genemap.tsv',
+      dejesus = 'data/DeJesus2017/orfs.csv',
+      resistance = 'data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt',
+      # OUTPUT
+      outfile = 'workflow/results/is6110.RData'
+    )
+}
 
+# ---- Load results from disk ----
 
-# Load results -----------------------------------------------------
-
-
-# Metadata
+# Read sample metadata.
 metadata <- read.csv(paths$metadata, sep='\t')
 
-# Tree
+# Read the rooted phylogenetic tree.
 tree <- read.tree(paths$tree)
 
-# Copy numbers
+# Read copy-number estimates for the insertion sites.
 copy_numbers <- read.csv(paths$copy_numbers, sep='\t')
 
-# Presence/absence matrices
+# Read the 5' and 3' presence/absence matrices and set the first column as row names.
 matrix5 <- read.csv(paths$matrix5, sep='\t')
 rownames(matrix5) <- matrix5[,1]
 matrix5 <- matrix5[,-1]
@@ -57,15 +93,15 @@ print(paste('Number of reference insertion sites: ', length(unique(refins$positi
 
 
 
-# Color schemes ----------------------------------------------
+# ---- Define plotting defaults and color palettes ----
 
-# Load latex fonts (only has to be done once)
+# Load LaTeX fonts once if they are available locally.
 #library(extrafont)
 #loadfonts()
-# run the following command once
+# Run the following command once to install the fonts on the system.
 #font_import()
 
-# Set plotting theme (not useful, ggsave onyl renders correct font when specified in the plot itself)
+# Set the plotting theme used by downstream figures.
 
 plot_theme = theme_bw(base_family = "CMU Sans Serif", base_size=12)
 theme_set(plot_theme)
@@ -114,61 +150,84 @@ mtb_col_scale_animals_black <- c(
 lineage_order = c('L1', 'L2', 'L3', 'L4', 'L5', 'L6', 'L7', 'L8', 'L9', 'L10','La1', 'La2', 'La3', 'LaX', 'Dassie bacillus')
 
 
-# Load and augment gene map matching MTBC0 to H37Rv gene names ----------------
+# ---- Load and augment the gene map ----
 
-augment_genemap <- function(genemap, dejesus_path, resistance_path){
-  
-  # Add DeJesus essentiality
-  dejesus <- read.csv(dejesus_path, sep= '\t')
-  genemap$essentiality <- as.factor(dejesus$Final.Call[match(genemap$h37rv_id, dejesus$ORF.ID)])
-  
-  # Distance to oriC
-  genemap$dist_ori <- sapply(genemap$h37rv_start, dist_to_oriC)
-  
-  
-  # Add resistance association
-  resist = read.delim(resistance_path, sep='\t')
-  
-  resistance_genes = c()
-  for (locus in resist$variant){
-    gene = strsplit(locus, '_') %>% unlist()
-    resistance_genes = c(resistance_genes, gene[1])
+#' Compute the shortest circular distance from a genomic coordinate to the
+#' origin of replication in H37Rv.
+#'
+#' The oriC coordinates are taken from the reference used in the project.
+#'
+#' @param position A genomic coordinate.
+#' @param genome_size Total genome size in base pairs.
+#' @param oriC_start Start coordinate of the oriC region.
+#' @param oriC_end End coordinate of the oriC region.
+#' @return The shortest circular distance to oriC.
+dist_to_oriC <- function(position, genome_size = 4435783, oriC_start = 1349, oriC_end = 2161) {
+  if (is.na(position)) {
+    distance <- NA
+  } else if (position < oriC_start) {
+    distance <- genome_size - oriC_end + position
+  } else if (position > oriC_end) {
+    distance <- position - oriC_start
+  } else {
+    distance <- 0
   }
-  resistance_genes = unique(resistance_genes)
-  resistance_genes
-  
-  genemap$resistance = rep('no', nrow(genemap))
-  genemap$resistance[which(genemap$gene_id %in% resistance_genes | genemap$h37rv_id %in% resistance_genes)] <- 'yes'  
-  
+  return(min(distance, genome_size - distance))
+}
+
+#' Add functional annotations to the gene map.
+#'
+#' This helper merges the gene map with information about essentiality,
+#' distance to oriC, and resistance-associated genes.
+#'
+#' @param genemap A data frame containing the MTBC0-to-H37Rv gene map.
+#' @param dejesus_path Path to the DeJesus essentiality table.
+#' @param resistance_path Path to the WHO resistance coordinate table.
+#' @return A gene map data frame with added annotation columns.
+augment_genemap <- function(genemap, dejesus_path, resistance_path) {
+  # Add DeJesus essentiality annotations.
+  dejesus <- read.csv(dejesus_path, sep = '\t')
+  genemap$essentiality <- as.factor(dejesus$Final.Call[match(genemap$h37rv_id, dejesus$ORF.ID)])
+
+  # Add distance to oriC.
+  genemap$dist_ori <- sapply(genemap$h37rv_start, dist_to_oriC)
+
+  # Add resistance association.
+  resist <- read.delim(resistance_path, sep = '\t')
+
+  resistance_genes <- c()
+  for (locus in resist$variant) {
+    gene <- strsplit(locus, '_') %>% unlist()
+    resistance_genes <- c(resistance_genes, gene[1])
+  }
+  resistance_genes <- unique(resistance_genes)
+
+  genemap$resistance <- rep('no', nrow(genemap))
+  genemap$resistance[which(genemap$gene_id %in% resistance_genes | genemap$h37rv_id %in% resistance_genes)] <- 'yes'
+
   return(genemap)
 }
 
 
-# Add information to gene metadata: essentiality, distance to origin, resistance
-genemap = read.delim("data/MTBC0/mtbc0_to_h37rv.genemap.tsv", sep='\t')
+# Add information to gene metadata: essentiality, distance to origin, resistance.
+genemap <- read.delim(paths$genemap, sep='\t')
 
 # Add essentiality and resistance information
-genemap = augment_genemap(
-  genemap,
-  'manuscript/literatura/DeJesus2017/orfs.csv',
-  'data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt'
-)
-
+genemap = augment_genemap(genemap, paths$dejesus, paths$resistance)
 
 # Add blast hits to matrix metadata ---------------------------
-matrix_metadata <- add_blast_info(matrix_metadata)
+#matrix_metadata <- add_blast_info(matrix_metadata)
 
 
+# ---- Normalize lineage labels ----
+metadata$lineage <- metadata$LINEAGE_x
+metadata$sublineage <- metadata$SUBLINEAGE_x
+metadata$lineage[which(metadata$lineage == 'C')] <- 'LaX'
+metadata$lineage[which(metadata$lineage == 'D')] <- 'Dassie bacillus'
 
-# Add alternative lineage names -------------------------------
-metadata$lineage = metadata$LINEAGE_x
-metadata$sublineage = metadata$SUBLINEAGE_x
-metadata$lineage[which(metadata$lineage=='C')] <- 'LaX'
-metadata$lineage[which(metadata$lineage=='D')] <- 'Dassie bacillus'
 
-
-# Rescale branch lengths to account for non-variable positions -----------------
-#Information from https://github.com/cstritt/large_variable_alignment/
+# ---- Rescale branch lengths to account for non-variable positions ----
+# Information from https://github.com/cstritt/large_variable_alignment/
 
 genome_size = 4411532  
 excluded_positions = 673325
@@ -178,10 +237,9 @@ scaling_factor <- (genome_size - excluded_positions)/ var_positions
 tree$edge.length = tree$edge.length * scaling_factor
 
 
-# Get MRCA of lineages -----------------------------------------
+# ---- Infer MRCA nodes for each lineage ----
 
-
-# Check monophyly and get mrca
+# Check monophyly and retrieve the MRCA node for each lineage.
 mrcas <- list()
 nomono <- list()
 
@@ -227,8 +285,7 @@ singles <- data.frame(
 
 mrcas <- rbind(mrcas, singles)
 
-
-# Clean up data and save image ---------------------------
-rm(singles, row, md_l, ua_asr, ua_meta)
-rm(paths)
-save.image('is6110.RData')
+# ---- Clean up and save the final R image ----
+outfile = paths$outfile
+rm(singles, md_l, paths)
+save.image(outfile)

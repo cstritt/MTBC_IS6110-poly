@@ -8,7 +8,7 @@ rule subsample_tree:
     conda: '../envs/R.yml'
     shell:
         """
-        Rscript scripts/subsample_tree.r {input.tree} {params.metadata} {params.ntips} {output}
+        Rscript scripts/subsample_tree.R {input.tree} {params.metadata} {params.ntips} {output}
         """
 
 rule run_abc:
