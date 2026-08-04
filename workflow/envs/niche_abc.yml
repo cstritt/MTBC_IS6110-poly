@@ -3,18 +3,13 @@ channels:
   - conda-forge
   - bioconda
   - defaults
-  - r
-  - https://repo.anaconda.com/pkgs/main
-  - https://repo.anaconda.com/pkgs/r
-  - nvidia
-  - pytorch
 dependencies:
   - _libgcc_mutex=0.1=conda_forge
   - _openmp_mutex=4.5=2_gnu
   - alsa-lib=1.2.14=hb9d3cd8_0
   - attr=2.5.2=h39aace5_0
   - bzip2=1.0.8=hda65f42_8
-  - ca-certificates=2025.8.3=hbd8a1cb_0
+  - ca-certificates=2026.7.22=hbd8a1cb_0
   - cairo=1.18.4=h3394656_0
   - cyrus-sasl=2.1.28=hd9c7081_0
   - dbus=1.16.2=h3c4dab8_0
@@ -98,15 +93,17 @@ dependencies:
   - libxml2=2.13.8=h04c0eec_1
   - libxslt=1.1.43=h7a3aeb2_0
   - libzlib=1.3.1=hb9d3cd8_2
+  - llvmlite=0.46.0=py312h7424e68_0
   - lxml=6.0.2=py312h70dad80_0
   - lz4-c=1.10.0=h5888daf_1
   - mpg123=1.32.9=hc50e24c_0
   - ncurses=6.5=h2d0b736_3
   - nspr=4.37=h29cc59b_0
   - nss=3.116=h445c969_0
+  - numba=0.64.0=py312hd1dde6f_0
   - numpy=2.3.3=py312h33ff503_0
   - openldap=2.6.10=he970967_0
-  - openssl=3.5.3=h26f9b46_1
+  - openssl=3.6.3=h35e630c_0
   - packaging=25.0=pyh29332c3_1
   - pandas=2.3.2=py312hf79963d_0
   - pcre2=10.46=h1321c63_0
@@ -122,6 +119,7 @@ dependencies:
   - python-tzdata=2025.2=pyhd8ed1ab_0
   - python_abi=3.12=8_cp312
   - pytz=2025.2=pyhd8ed1ab_0
+  - pyyaml=6.0.3=py312h8a5da7c_1
   - qt-main=5.15.15=h3a7ef08_5
   - readline=8.2=h8c095d6_2
   - scipy=1.16.2=py312h7a1785b_0
@@ -152,5 +150,6 @@ dependencies:
   - xorg-libxshmfence=1.3.3=hb9d3cd8_0
   - xorg-libxxf86vm=1.1.6=hb9d3cd8_0
   - xorg-xextproto=7.3.0=hb9d3cd8_1004
+  - yaml=0.2.5=h280c20c_3
   - zstd=1.5.7=hb8e6e7a_2
-prefix: /scicore/home/gagneux/stritt0001/miniconda3/envs/niche_abc
+prefix: /home/cristobal/anaconda3/envs/niche_abc

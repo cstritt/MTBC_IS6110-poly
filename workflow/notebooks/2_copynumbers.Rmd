@@ -15,22 +15,21 @@ knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
 # Snakemake I/O
 ```{r}
-paths <- tryCatch(
-  {
-    list(
+
+if (exists("snakemake")) {
+  paths <- list(
       rdata = snakemake@input$rdata,
       treedata = snakemake@input$treedata,
       output_html     = snakemake@output[[1]]
     )
-  },
-  error = function(e){
-    list(
-      rdata           = 'is6110.RData',
-      treedata        = 'workflow/results/phylogeny/treedata.CN_ASR.tsv'
+} else {
+  message("No snakemake object found — using default paths for interactive testing")
+  paths <- list(
+      rdata           = 'workflow/results/is6110.RData',
+      treedata        = 'workflow/results/phylogeny/treedata.CN_ASR.tsv',
       output_html     = NULL  # or whatever default makes sense
     )
-  }
-)
+}
 
 ```
 

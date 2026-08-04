@@ -28,8 +28,9 @@ if (exists("snakemake")) {
   message("No snakemake object found — using default paths for interactive testing")
   paths <- list(
       subtree = "workflow/results/niche_model/subsampled_tree.rooted.nex",
-      abc_params = "workflow/results/niche_model/abc_params.tsv",
-      abc_summary = "workflow/results/niche_model/abc_summaries.tsv",
+      abc_params = "workflow/results/niche_model/1e6_v2/abc_params.tsv",
+      abc_summary = "workflow/results/niche_model/1e6_v2/abc_summaries.tsv",
+      obs_stats = "workflow/results/niche_model/obs_stats.yaml",
       rdata = "workflow/results/is6110.RData",
       output_html     = NULL
     )
@@ -52,84 +53,18 @@ library(viridis)
 ```
 
 
-# A niche constraints model for IS6110
-An evolutionary model to explain IS copy number variation, hotspots:
-Few loci in the genome where IS can insert safely. This are hit by chance, and once hit,additional copies increase the birth rate. Model implemented in niche_model.py.
-
-Use downsampled tree, e.g. 500 strains.
-
-Fit model to data using approximate Bayesian computation. Summary statistics: median CN, var(CN)_clades, ...
-Chose initial distributions according to real data (birth rate, death rate, max_number ...). 
-Fixed: initial_copies = 1, L = 
-Fitted: p_lethal, r_birth, r_death
-
-
 # Summary statistics
 
-Four aspects:
-
-Overall burden:	cn_*
-Population structure:	cladevar
-Hotspot behaviour:	hs_*
-Site frequency spectrum:	sfs_*
-
-
-## Observed summary statistics in the subtree
+## Load observed summary statistics in the subtree
 ```{r}
-library(ape)
+library(yaml)
 
-# Load the functions
-source('workflow/scripts/sfs_functions.R')
-
-# Compute observed summary statistics
-load(paths$rdata)  # loads matrix5 (presence/absence), metadata
-
-
-# Subset matrix to strains present in sub tree
-treesim <- read.tree(paths$subtree)
-treesim$tip.label
-
-matrix_treesim <- matrix5[treesim$tip.label,]
-matrix_treesim <- matrix_treesim[,colSums(matrix_treesim) != 0]
-
-# Get stats
-obs_stats <- get_all_summary_stats(matrix_treesim, metadata)
-print(obs_stats)
-
+obs_stats <- read_yaml(paths$obs_stats)
+obs_df <- as.data.frame(obs_stats)
 ```
 
 
-## Internal vs. terminal branches
-```{r}
-library(ape)
-library(ggtree)
-library(ggplot2)
-
-treesim$edge.length[1:tree$Nnode]
-
-branch_lengths <- data.frame(
-  length = treesim$edge.length,
-  type = c(
-    rep('terminal', treesim$Nnode),
-    rep('internal',length(treesim$edge.length)-treesim$Nnode)
-  )
-)
-head(branch_lengths)
-
-ggplot(branch_lengths, aes(x=type, y=length)) + geom_boxplot()
-ggplot(branch_lengths, aes(length, col=type)) + geom_density()
-
-branch_lengths %>%
-  group_by(type) %>%
-  summarize(
-    mean = mean(length),
-    median = median(length)
-    )
-
-```
-
-
-## Simulation results
+## Load simulation results
 ```{r}
 library(magrittr)
 library(ggplot2)
@@ -153,12 +88,8 @@ as.data.frame(summaries_mat) %>% melt() %>%
 
 
 # Find informative summary stats
-The full set of summary stats is redundant. Use random forest to find
-stats that are actuall informative.
+The full set of summary stats is redundant, as shown by the correlogram. Use random forest to pick stats that are actuall informative. 
 
-'p_essential', 'p_tolerated', 'r_birth'
-
-How are the summary stats correlated?
 ```{r}
 library(ggplot2)
 library(GGally)
@@ -227,124 +158,29 @@ panelB <- ggplot(importanzia, aes(y=stat, x=value)) +
 panelB
 ```
 
+Save correlogram and variable importance for the supplement.
 ```{r}
-cowplot::plot_grid(panelA, panelB, nrow=2, rel_heights= c(2,1))
+
+ggsave('figures/supplement/figS12.summary_stats_correlogram.png', panelA, width = 45, height =45, units = "cm", dpi = 300) 
+
+ggsave('figures/supplement/figS13.summary_stats_variable_importance.png', panelB,  width = 20, height = 20, units = "cm", dpi = 300) 
 ```
-
-
 
 
 ## Select informative core stats
 ```{r}
 core_stats <- c(
-  #'n_singletons',
-  'n_rare',           
-  #'n_doubletons',            
-  #'n_common',
+  'sfs_1',              
+  'sfs_5',
+  'sfs_gt25pct',
   'gini_occupancy',   
-  'mean_cn',
-  #'max_cn',
+  'max_occupancy',
+  'median_cn',
   'lineage_sd'
 )
 
 obs_stats_core <- obs_stats[core_stats]
 summaries_mat_core <- summaries_mat[,core_stats]
-
-```
-
-
-# Prior diagnostics
-Check whether the priors used actually produce meaningful results. I had issues with "pathological regimes", where a large proportion of simulations produced maximal or 0 copy numbers...
-```{r}
-
-# Calculate Euclidean distance
-obs <- unlist(obs_stats_core)
-
-d <- sqrt(rowSums((sweep(as.matrix(summaries_mat_core), 2, obs))^2))
-quantile(d, c(.001,.01,.05,.1))
-keep <- order(d)[1:20]
-
-cbind(d[keep], summaries_mat_core[keep, ])
-
-# Steep jump in distances between 0 and max. CN
-plot(sort(d))
-
-# Plot parameters against core summary stats
-subsamp_n = 100000
-subsamp_i = sample(1:nrow(summaries_mat), subsamp_n)
-simdf <- cbind(params_mat[subsamp_i,], summaries_mat[subsamp_i,]) %>% as.data.frame()
-
-# r_birth
-ggplot(simdf, aes(r_birth, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_birth, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_birth, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_birth, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
-
-# r_loss
-ggplot(simdf, aes(r_loss, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_loss, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_loss, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(r_loss, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
-
-# p_neutral
-ggplot(simdf, aes(p_neutral, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(p_neutral, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(p_neutral, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(p_neutral, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
-
-# gamma_shape
-ggplot(simdf, aes(gamma_shape, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_shape, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_shape, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_shape, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
-
-# gamma_scale
-ggplot(simdf, aes(gamma_scale, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_scale, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_scale, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
-ggplot(simdf, aes(gamma_scale, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
-
-
-# How many simulations are pathological?
-regime <- ifelse(
-    summaries_mat[,"mean_cn"] == 0,
-    "extinct",
-    ifelse(summaries_mat[,"mean_cn"] > 50,
-           "exploding",
-           "reasonable")
-)
-table(regime)
-
-
-boxplot(params_mat[,"p_neutral"] ~ regime)
-boxplot(params_mat[,"r_birth"] ~ regime)
-boxplot(params_mat[,"r_loss"] ~ regime)
-boxplot(params_mat[,"gamma_shape"] ~ regime)
-boxplot(params_mat[,"gamma_scale"] ~ regime)
-
-
-# Tighten posteriors
-patholog_i = which(summaries_mat[,"mean_cn"]==0 | summaries_mat[,"mean_cn"] > 100)
-print(paste(length(patholog_i), "observations out of", nrow(summaries_mat), "produce unrealistic results"))
-
-params_mat_tight <- params_mat[-patholog_i, ]
-summaries_mat_tight <- summaries_mat[-patholog_i,]
-summaries_mat_tight_core <- summaries_mat_tight[,core_stats]
-
-
-# Multiple criteria
-summary(as.data.frame(summaries_mat))
-
-realistic_ <- with(
-  as.data.frame(summaries_mat),
-  mean_cn > 0 & mean_cn < 30 &
-  max_cn < 50
-  )
-table(realistic_)
-
-summary(params_mat[realistic_, ])
-obs_stats
-summary(summaries_mat[realistic_,])
 
 ```
 
@@ -354,11 +190,10 @@ library(abc)
 
 
 # Run abc (rejection followed by local linear regression)
-
 abc_res <- abc(target = obs_stats_core,
-               param = params_mat_tight,
-               sumstat = summaries_mat_tight_core,
-               tol = 0.01,   # keep top 1% closest sims
+               param = params_mat,
+               sumstat = summaries_mat_core,
+               tol = 0.001,   # keep top 1% closest sims
                method = "neuralnet")
 
 summary(abc_res)
@@ -407,25 +242,10 @@ panelA
 # OR, more simply, if you want to be explicit about the tolerance:
 # Extract which simulations were accepted
 accepted_idx <- abc_res$region  # logical vector of length nrow(summaries_mat)
-accepted_sums <- summaries_mat_tight[accepted_idx, ]
+accepted_sums <- summaries_mat[accepted_idx, ]
 
-used_stats <- names(obs_stats)
-
-focal_stats <- c(
-  'cn_mean', 'cn_25', 'cn_50', 'cn_75', 'cn_max', 
-  'cladevar', 'cladesd', 
-  'hs_gini')
-
-stat_labels <- c(
-  cn_mean   = 'Mean CN',
-  cn_25     = '25 percentile CN',
-  cn_50     = 'Median CN',
-  cn_75     = '75 percentile CN',
-  cn_max    = 'Max CN',
-  cladevar  = 'Between-lineage var.',
-  cladesd   = 'Between-lineage SD',
-  hs_gini   = 'Gini (hotspots)'
-)
+#used_stats <- names(obs_stats)
+used_stats <- core_stats
 
 ppc_long <- as.data.frame(accepted_sums[, used_stats]) %>%
   pivot_longer(everything(), names_to = 'statistic', values_to = 'value') 
@@ -448,13 +268,25 @@ pD
 ```
 
 
-# Simulated vs. observed tree
+# Best model vs. observed data
 ```{r}
 # Best model
 best_i = which(abc_res$dist==min(abc_res$dist))
-params_mat_tight[best_i,]
-summaries_mat_tight[best_i,]
-obs_stats
+params_mat[best_i,]
+comp_df <- cbind(obs_stats, summaries_mat[best_i,])
+colnames(comp_df) <- c('Observed', 'Simulated')
+comp_df
+
+
+
+```
+
+
+
+
+# Simulate data with best parameters
+```{r}
+
 
 args_best <- c(
   "workflow/scripts/niche_model_numba.py",
@@ -809,5 +641,131 @@ for (region in regions){
   )
   #print(row)
   hotspot_summary = rbind(hot
+
+```
+
+## Internal vs. terminal branch lengths
+```{r}
+library(ape)
+library(ggtree)
+library(ggplot2)
+
+tree = read.tree(paths$subtree)
+
+tree$edge.length[1:tree$Nnode]
+
+branch_lengths <- data.frame(
+  length = treesim$edge.length,
+  type = c(
+    rep('terminal', treesim$Nnode),
+    rep('internal',length(treesim$edge.length)-treesim$Nnode)
+  )
+)
+head(branch_lengths)
+
+ggplot(branch_lengths, aes(x=type, y=length)) + geom_boxplot()
+ggplot(branch_lengths, aes(length, col=type)) + geom_density()
+
+branch_lengths %>%
+  group_by(type) %>%
+  summarize(
+    mean = mean(length),
+    median = median(length)
+    )
+
+```
+
+## Prior diagnostics
+Check whether the priors used actually produce meaningful results. I had issues with "pathological regimes", where a large proportion of simulations produced maximal or 0 copy numbers...
+```{r}
+
+# Calculate Euclidean distance
+obs <- unlist(obs_stats_core)
+
+d <- sqrt(rowSums((sweep(as.matrix(summaries_mat_core), 2, obs))^2))
+quantile(d, c(.001,.01,.05,.1))
+keep <- order(d)[1:20]
+
+cbind(d[keep], summaries_mat_core[keep, ])
+
+# Steep jump in distances between 0 and max. CN
+plot(sort(d))
+
+# Plot parameters against core summary stats
+subsamp_n = 100000
+subsamp_i = sample(1:nrow(summaries_mat), subsamp_n)
+simdf <- cbind(params_mat[subsamp_i,], summaries_mat[subsamp_i,]) %>% as.data.frame()
+
+# r_birth
+ggplot(simdf, aes(r_birth, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_birth, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# r_loss
+ggplot(simdf, aes(r_loss, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(r_loss, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# p_neutral
+ggplot(simdf, aes(p_neutral, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(p_neutral, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# gamma_shape
+ggplot(simdf, aes(gamma_shape, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_shape, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+# gamma_scale
+ggplot(simdf, aes(gamma_scale, mean_cn)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, gini_occupancy)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, n_rare)) + geom_point(alpha=0.1) + geom_smooth()
+ggplot(simdf, aes(gamma_scale, lineage_sd)) + geom_point(alpha=0.1) + geom_smooth()
+
+
+# How many simulations are pathological?
+regime <- ifelse(
+    summaries_mat[,"mean_cn"] == 0,
+    "extinct",
+    ifelse(summaries_mat[,"mean_cn"] > 50,
+           "exploding",
+           "reasonable")
+)
+table(regime)
+
+
+boxplot(params_mat[,"p_neutral"] ~ regime)
+boxplot(params_mat[,"r_birth"] ~ regime)
+boxplot(params_mat[,"r_loss"] ~ regime)
+boxplot(params_mat[,"gamma_shape"] ~ regime)
+boxplot(params_mat[,"gamma_scale"] ~ regime)
+
+
+# Tighten posteriors
+patholog_i = which(summaries_mat[,"mean_cn"]==0 | summaries_mat[,"mean_cn"] > 100)
+print(paste(length(patholog_i), "observations out of", nrow(summaries_mat), "produce unrealistic results"))
+
+params_mat_tight <- params_mat[-patholog_i, ]
+summaries_mat_tight <- summaries_mat[-patholog_i,]
+summaries_mat_tight_core <- summaries_mat_tight[,core_stats]
+
+
+# Multiple criteria
+summary(as.data.frame(summaries_mat))
+
+realistic_ <- with(
+  as.data.frame(summaries_mat),
+  mean_cn > 0 & mean_cn < 30 &
+  max_cn < 50
+  )
+table(realistic_)
+
+summary(params_mat[realistic_, ])
+obs_stats
+summary(summaries_mat[realistic_,])
 
 ```

@@ -66,8 +66,10 @@ rule niche_space:
 rule niche_model:
     input: 
         subtree = outdir + '/niche_model/subsampled_tree.rooted.nex',
-        abc_params = outdir + '/niche_model/abc_params.tsv',
-        abc_summary = outdir + '/niche_model/abc_summaries.tsv',
+        abc_params_basic = outdir + '/niche_model/abc_params.tsv',
+        abc_summary_basic = outdir + '/niche_model/abc_summaries.tsv',
+        abc_params_tsp = outdir + '/niche_model/tsp/abc_params.tsv',
+        abc_summary_tsp = outdir + '/niche_model/tsp/abc_summaries.tsv',
         rdata = outdir + '/is6110.RData'
     output: outdir + '/5_niche_model.html'
     conda: '../envs/R.yml'

@@ -58,6 +58,7 @@ benchmarking:
   hit_lengths: [20]
   min_cluster_size: [3]
 
-niche_model_abc:
+abc:
   ntips : 500
-  nsimulations : 10000
+  nsimulations : 100
+  priors: software/IS_simulation/abc_priors.yaml

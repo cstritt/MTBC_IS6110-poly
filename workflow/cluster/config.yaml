@@ -100,8 +100,14 @@ set-resources:
     cpus_per_task: 20
     mem_mb: 20000
 
-  run_abc:
+  abc_basic:
     qos: "1day"
     runtime: 1400
-    cpus_per_task: 1
-    mem_mb: 8000  
+    cpus_per_task: 40
+    mem_mb: 16000  
+
+  abc_target_pref:
+    qos: "1day"
+    runtime: 1400
+    cpus_per_task: 40
+    mem_mb: 16000
