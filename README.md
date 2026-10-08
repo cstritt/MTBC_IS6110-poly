@@ -1,11 +1,10 @@
-# *... under development...*
-
 # Evolutionary dynamics of IS6110 in the *Mycobacterium tuberculosis* complex
 
 This folder contains the material of the study "A niche constraints model for the evolutionary dynamics of the insertion sequence IS6110 in the *Mycobacterium tuberculosis* complex", including the Snakemake workflow to replicate the full analysis. 
 
-The tool used to infer IS polymorphisms in the study, detettore6110, is available here: https://github.com/cstritt/detettore6110. 
+The results are available as a bioRxiv preprint: https://doi.org/10.64898/2026.09.24.753865.
 
+The tool used to infer IS polymorphisms in the study, detettore6110, is available here: https://github.com/cstritt/detettore6110. 
 
 ## Snakemake workflow
 
@@ -19,7 +18,6 @@ conda create -n snakemake -c conda-forge snakemake snakemake-executor-plugin-slu
 ```
 
 Open screen, activate env, and run pipeline
-
 ```{bash}
 screen -R snakemake 
 conda activate snakemake
@@ -32,33 +30,6 @@ snakemake \
 
 # Real run
 snakemake --profile cluster main -n
-
-# Provide alternative config file
-snakemake \
-  --profile cluster \
-  --configfile config/config_georgia.yaml \
-  --dry-run \
-  main
-
-
-
-```
-
-### Run detettore benchmarking
-```{bash}
-
-snakemake --profile cluster -n benchmarking
-snakemake --profile cluster benchmarking
-
-
-```
-
-### Run detettore only with alternative config
-```{bash}
-
-snakemake --profile cluster -n detettore_only --configfile config/config_tanzania.yml
-snakemake --profile cluster detettore_only
-
 
 ```
 

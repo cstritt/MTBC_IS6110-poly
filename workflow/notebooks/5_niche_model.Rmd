@@ -28,8 +28,8 @@ if (exists("snakemake")) {
   message("No snakemake object found — using default paths for interactive testing")
   paths <- list(
       subtree = "workflow/results/niche_model/subsampled_tree.rooted.nex",
-      abc_params = "workflow/results/niche_model/1e6_v2/abc_params.tsv",
-      abc_summary = "workflow/results/niche_model/1e6_v2/abc_summaries.tsv",
+      abc_params = "workflow/results/niche_model/three_param_100k/abc_params.tsv",
+      abc_summary = "workflow/results/niche_model/three_param_100k/abc_summaries.tsv",
       obs_stats = "workflow/results/niche_model/obs_stats.yaml",
       rdata = "workflow/results/is6110.RData",
       output_html     = NULL
@@ -286,8 +286,6 @@ comp_df
 
 # Simulate data with best parameters
 ```{r}
-
-
 args_best <- c(
   "workflow/scripts/niche_model_numba.py",
   "--tree", "workflow/results/niche_model/subsampled_tree.rooted.nex",
