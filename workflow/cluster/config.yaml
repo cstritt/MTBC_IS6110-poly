@@ -111,3 +111,15 @@ set-resources:
     runtime: 1400
     cpus_per_task: 40
     mem_mb: 16000
+
+  download_sra:
+    qos: "6hours"
+    runtime: "6h"
+    cpus_per_task: 2
+    mem_mb: 4000
+
+  convert_to_fastq:
+    qos: "1day"
+    runtime: "24h"
+    cpus_per_task: 6
+    mem_mb: 16000

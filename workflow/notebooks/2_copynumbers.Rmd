@@ -166,7 +166,7 @@ fig2a <- t + geom_tree(aes(col=copy_number),size=0.1, alpha=0.8) +
     legend.key.size = unit(3, "mm")) +
   geom_cladelab(
     data = subset(mrcas, !(lineage %in% c('L9', 'L10', 'Dassie bacillus'))), 
-    mapping=aes(node = node, label = lineage),
+   mapping=aes(node = node, label = lineage),
     fontsize = 1.5, barsize=0.1, offset.text=0.0008,color='grey20') +
   scale_color_viridis(option = 'turbo') +
   labs(col = "IS6110 copy number")

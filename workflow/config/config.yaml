@@ -3,6 +3,11 @@ metadata: ../metadata/10k/metadata_reduced.tsv
 path_to_db: /scicore/home/gagneux/GROUP/tbresearch/genomes/IN_PROGRESS/common_mappings/PipelineTB/v2
 vcf: ../data/major_variants.merged.vcf.gz
 
+# Data source configuration
+data_source: scicore  # Options: "scicore" (CRAM files from HPC) or "ncbi" (download from SRA)
+ncbi_download_path: data/ncbi_downloads  # Path for downloaded NCBI SRA files
+sra_threads: 6  # Number of threads for fasterq-dump
+
 outdir: 
   main: results  # No slash at the end
   benchmarking: results

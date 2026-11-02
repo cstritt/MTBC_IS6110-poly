@@ -1,8 +1,38 @@
+import os
+
+# Parse read types from metadata for NCBI mode
+read_types_detettore = {}
+if config['data_source'] == "ncbi":
+    with open(config["metadata"]) as f:
+        header = next(f).strip().split("\t")
+        gnumberi = header.index("GNUMBER")
+        read_typei = header.index("READ TYPE") if "READ TYPE" in header else -1
+
+        for line in f:
+            fields = line.strip().split("\t")
+            gnumber = fields[gnumberi]
+            if read_typei >= 0:
+                read_types_detettore[gnumber] = fields[read_typei]
+
+def get_reads_input(wildcards):
+    """Return appropriate read input files based on data source and read type"""
+    reads = gnrs[wildcards.gnr]
+    if config['data_source'] == "ncbi":
+        # For NCBI, check if paired-end
+        is_paired = read_types_detettore.get(wildcards.gnr, "PE") == "PE"
+        if is_paired:
+            reads2 = reads.replace('_1.fastq.gz', '_2.fastq.gz')
+            return reads, reads2
+    # For scicore or single-end, return empty string for reads2
+    return reads, ""
+
+# Define detettore rule
 rule detettore:
-    input: 
-        reads = lambda wildcards: gnrs[wildcards.gnr],
+    input:
+        reads = lambda wildcards: get_reads_input(wildcards)[0],
+        reads2 = lambda wildcards: get_reads_input(wildcards)[1],
         detettore = 'software/detettore6110/detettore6110.py'
-    output: 
+    output:
         insertions = outdir + '/detettore/{gsubdir}/{gnr}.reference_insertions.tsv',
         anchors = outdir + '/detettore/{gsubdir}/{gnr}.anchors.tsv'
     params:
@@ -14,12 +44,21 @@ rule detettore:
     conda: '../envs/detettore6110.yml'
     shell:
         """
-        python3 software/detettore6110/detettore6110.py {input.reads} \
-         -t {params.target} \
-         -r {params.reference} \
-         -a {params.annotation} \
-         -o {params.outdir} \
-         -p {params.gnr}
+        if [ -n "{input.reads2}" ] && [ -f "{input.reads2}" ]; then
+            python3 software/detettore6110/detettore6110.py {input.reads} {input.reads2} \
+             -t {params.target} \
+             -r {params.reference} \
+             -a {params.annotation} \
+             -o {params.outdir} \
+             -p {params.gnr}
+        else
+            python3 software/detettore6110/detettore6110.py {input.reads} \
+             -t {params.target} \
+             -r {params.reference} \
+             -a {params.annotation} \
+             -o {params.outdir} \
+             -p {params.gnr}
+        fi
         """
 
 rule detettore_summarize_results:
