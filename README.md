@@ -1,6 +1,6 @@
 # Evolutionary dynamics of IS6110 in the *Mycobacterium tuberculosis* complex
 
-This folder contains the material of the study "A niche constraints model for the evolutionary dynamics of the insertion sequence IS6110 in the *Mycobacterium tuberculosis* complex", including the Snakemake workflow to replicate the full analysis. 
+This folder contains the material of the study "Evolutionary dynamics of the insertion sequence IS6110 in the *Mycobacterium tuberculosis* complex", including the Snakemake workflow to replicate the full analysis. 
 
 The results are available as a bioRxiv preprint: https://doi.org/10.64898/2026.09.24.753865.
 
