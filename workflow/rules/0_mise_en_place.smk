@@ -59,6 +59,20 @@ elif config['data_source'] == "ncbi":
             else:
                 # Skip samples without NCBI accession
                 continue
+elif config['data_source'] == "db":
+    # Extract FASTQ from IS6110 database
+    import sqlite3
+    db_path = config['db_path']
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT sample_name FROM samples ORDER BY sample_name;")
+    for row in cursor.fetchall():
+        gnr = row[0]
+        a = gnr[0:3]
+        b = gnr[3:5]
+        c = gnr[5:]
+        gnrs[gnr] = f'{outdir}/db_extracted/{a}/{b}/{c}/{gnr}.fastq.gz'
+    conn.close()
 
 
 # Output directory

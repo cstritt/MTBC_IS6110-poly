@@ -8,6 +8,16 @@ The tool used to infer IS polymorphisms in the study, detettore6110, is availabl
 
 ## Snakemake workflow
 
+### Data source options
+
+The workflow supports three data source options configured in `workflow/config/config.yaml`:
+
+1. **scicore** (default): Uses existing CRAM files from sciCORE HPC storage
+2. **ncbi**: Downloads FASTQ files from NCBI SRA using accession numbers from metadata
+3. **db**: Extracts IS6110 partial hits from the SQLite database at `data/is6110/is6110_db/is6110.partial_hits.db`
+
+To use the database source, set `data_source: db` in the config file.
+
 ### Set up snakemake
 
 ### Run main workflow

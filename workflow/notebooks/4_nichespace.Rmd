@@ -20,13 +20,10 @@ paths <- tryCatch(
       rdata = snakemake@input$rdata,
       hotspot_summary = snakemake@input$hotspot_summary,
       fiveprime_ancestral_lh = snakemake@input$five_alh,
-
-      
       mtbc0_gff = snakemake@params$annot,
       dejesus = snakemake@params$dejesus,
       genemap = snakemake@params$genemap,
       regionmap = snakemake@params$regionmap,
-      
       output_html     = snakemake@output$html
     )
   },
@@ -35,12 +32,10 @@ paths <- tryCatch(
       rdata = 'is6110.RData',
       hotspot_summary = 'workflow/results/detettore/hotspot_summary.tsv',
       fiveprime_ancestral_lh = 'workflow/results/detettore/AS_5prime.ancestral_likelihoods.tsv',
-
-      mtbc0_gff = 'data/MTBC0/MTBC0v1.1_PGAP_annot.gff',
-      dejesus = 'data/DeJesus2017/orfs.csv',
-      genemap = 'data/MTBC0/mtbc0_to_h37rv.genemap.tsv',
-      regionmap = 'data/MTBC0/MTBC.genomic_regions.tsv',
-      
+      mtbc0_gff = 'data/reference/MTBC0/MTBC0v1.1_PGAP_annot.gff',
+      dejesus = 'data/annotations/DeJesus2017/orfs.csv',
+      genemap = 'data/reference/MTBC0/mtbc0_to_h37rv.genemap.tsv',
+      regionmap = 'data/reference/MTBC0/MTBC.genomic_regions.tsv',
       output_html     = NULL  # or whatever default makes sense
     )
   }

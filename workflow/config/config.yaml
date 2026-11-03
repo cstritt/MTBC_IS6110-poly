@@ -1,19 +1,27 @@
 gnumbers: ../metadata/10k/gnumbers.txt
 metadata: ../metadata/10k/metadata_reduced.tsv
 path_to_db: /scicore/home/gagneux/GROUP/tbresearch/genomes/IN_PROGRESS/common_mappings/PipelineTB/v2
-vcf: ../data/major_variants.merged.vcf.gz
+vcf: ../data/variants/major_variants.merged.vcf.gz
 
 # Data source configuration
-data_source: scicore  # Options: "scicore" (CRAM files from HPC) or "ncbi" (download from SRA)
-ncbi_download_path: data/ncbi_downloads  # Path for downloaded NCBI SRA files
+data_source: scicore  # Options: "scicore" (CRAM files from HPC), "ncbi" (download from SRA), or "db" (extract from IS6110 database)
+ncbi_download_path: data/ncbi  # Path for downloaded NCBI SRA files
 sra_threads: 6  # Number of threads for fasterq-dump
+db_path: ../data/is6110/is6110_db/is6110.partial_hits.db  # Path to IS6110 partial hits database
 
 outdir: 
   main: results  # No slash at the end
   benchmarking: results
   
+# Reference genome inputs
+reference:
+  mtbc0_fasta: ../data/reference/MTBC0/MTBC0_v1.1.fasta
+  mtbc0_gff: ../data/reference/MTBC0/MTBC0v1.1_PGAP_annot.gff
+  h37rv_fasta: ../data/reference/H37Rv/GCF_000195955.2_ASM19595v2_genomic.fna
+  h37rv_gff: ../data/reference/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
+  
 detettore:
-  reference: ../data/MTBC0/MTBC0_v1.1.fasta
+  reference: ../data/reference/MTBC0/MTBC0_v1.1.fasta
   is_target: 'software/detettore6110/resources/is_targets/IS6110.fasta'
   is_cluster: IS3_168
   seed_len: 20
@@ -27,14 +35,24 @@ phylogeny:
   bootstraps: 1000
 
 annotations:
-  mtbc0: ../data/MTBC0/MTBC0v1.1_PGAP_annot.gff
-  mtbc0_regions: ../data/MTBC0/MTBC.genomic_regions.tsv
-  mtbc0_region_seqs: ../data/MTBC0/MTBC0_CDS_intergenic.fasta
-  h37rv: ../data/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
-  mtbc0_h37rv_map: ../data/MTBC0/mtbc0_to_h37rv.genemap.tsv
+  mtbc0: ../data/reference/MTBC0/MTBC0v1.1_PGAP_annot.gff
+  mtbc0_regions: ../data/reference/MTBC0/MTBC.genomic_regions.tsv
+  mtbc0_region_seqs: ../data/reference/MTBC0/MTBC0_CDS_intergenic.fasta
+  h37rv: ../data/reference/H37Rv/GCF_000195955.2_ASM19595v2_genomic.gff
+  mtbc0_h37rv_map: ../data/reference/MTBC0/mtbc0_to_h37rv.genemap.tsv
 
-dejesus_orfs : ../data/DeJesus2017/orfs.csv
-who_resistance: ../data/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt
+dejesus_orfs : ../data/annotations/DeJesus2017/orfs.csv
+who_resistance: ../data/annotations/who_resistance/WHO-UCN-TB-2023.7-eng_genomic_coordinates.txt
+
+benchmarking:
+  assemblies: config/datasets/31assemblies.tsv
+  assembly_metadata: ../metadata/benchmarking/Harrison2024.metadata.tsv
+  min_id: 0.9
+  anchor_length: 300
+  readlengths: [100, 150]
+  coverages: [20, 30, 40, 50]
+  hit_lengths: [20]
+  min_cluster_size: [3]
 
 gwas:
   permutations: 100

@@ -52,13 +52,15 @@ rule birth_death:
 rule niche_space:
     input: 
         rdata =outdir + '/is6110.RData',
-        hotspot_summary = outdir + '/detettore/hotspot_summary.tsv'
+        hotspot_summary = outdir + '/detettore/hotspot_summary.tsv',
+        five_alh = outdir + '/detettore/AS_5prime.ancestral_likelihoods.tsv'
     
     output: outdir + '/4_niche_space.html'
     params: 
         annot = config['annotations']['mtbc0'],
         dejesus = config['dejesus_orfs'],
-        genemap = config['annotations']['mtbc0_h37rv_map']
+        genemap = config['annotations']['mtbc0_h37rv_map'],
+        regionmap = config['annotations']['mtbc0_regions']
     conda: '../envs/R.yml'
     script: '../notebooks/4_nichespace.Rmd'
 
@@ -70,7 +72,10 @@ rule niche_model:
         abc_summary_basic = outdir + '/niche_model/abc_summaries.tsv',
         abc_params_tsp = outdir + '/niche_model/tsp/abc_params.tsv',
         abc_summary_tsp = outdir + '/niche_model/tsp/abc_summaries.tsv',
+        obs_stats = outdir + '/niche_model/obs_stats.yaml',
         rdata = outdir + '/is6110.RData'
     output: outdir + '/5_niche_model.html'
+    params:
+        metadata = config['metadata']
     conda: '../envs/R.yml'
-    script: '../notebooks/5_nichemodel.Rmd'
+    script: '../notebooks/5_niche_model.Rmd'

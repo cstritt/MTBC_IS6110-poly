@@ -21,7 +21,9 @@ if (exists("snakemake")) {
       subtree = snakemake@input$subtree,
       abc_params = snakemake@input$abc_params,
       abc_summary = snakemake@input$abc_summary,
+      obs_stats = snakemake@input$obs_stats,
       rdata = snakemake@input$rdata,
+      metadata = snakemake@params$metadata,
       output_html     = snakemake@output[[1]]
     )
 } else {
@@ -32,6 +34,7 @@ if (exists("snakemake")) {
       abc_summary = "workflow/results/niche_model/three_param_100k/abc_summaries.tsv",
       obs_stats = "workflow/results/niche_model/obs_stats.yaml",
       rdata = "workflow/results/is6110.RData",
+      metadata = "../metadata/10k/metadata_reduced.tsv",
       output_html     = NULL
     )
 }
@@ -298,7 +301,7 @@ args_best <- c(
   "--seed", "42"
 )
 
-stdout_best = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args_best, stdout=TRUE)
+stdout_best = system2("python3", args_best, stdout=TRUE)
 cn_sim_best = read.delim(text=stdout_best, sep='\t')
 summary(cn_sim_best)
 
@@ -320,7 +323,7 @@ args_wm <- c(
   "--seed", "10"
 )
 
-stdout_wm = system2("/home/cristobal/anaconda3/envs/ete3/bin/python", args_wm, stdout=TRUE)
+stdout_wm = system2("python3", args_wm, stdout=TRUE)
 cn_sim_wm = read.delim(text=stdout_wm, sep='\t')
 summary(cn_sim_wm$copy_number)
 ```
