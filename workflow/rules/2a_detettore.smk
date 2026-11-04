@@ -24,7 +24,7 @@ def get_reads_input(wildcards):
             reads2 = reads.replace('_1.fastq.gz', '_2.fastq.gz')
             return reads, reads2
     # For scicore or single-end, return empty string for reads2
-    return reads, ""
+    return reads, []
 
 # Define detettore rule
 rule detettore:

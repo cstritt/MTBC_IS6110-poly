@@ -1,0 +1,11 @@
+# seqid                                                      family         nIS %Genome          bps4IS          dnaLen
+MTBC0                                                        IS110            5    0.15            6767         4435783
+MTBC0                                                        IS200/IS605      3    0.11            4893         4435783
+MTBC0                                                        IS21             5    0.21            9264         4435783
+MTBC0                                                        IS256            9    0.29           12872         4435783
+MTBC0                                                        IS3              2    0.10            4537         4435783
+MTBC0                                                        IS481            1    0.06            2575         4435783
+MTBC0                                                        IS5              2    0.23           10414         4435783
+MTBC0                                                        ISL3             3    0.09            3946         4435783
+MTBC0                                                        ISNCY            3    0.09            3886         4435783
+MTBC0_v1.1.fasta                                             total           33    1.33           59154         4435783
